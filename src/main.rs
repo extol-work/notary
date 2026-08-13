@@ -9,6 +9,7 @@
 
 mod attestation;
 mod canonical;
+mod devnet;
 mod keyfile;
 mod sas;
 mod vectors;
@@ -62,6 +63,32 @@ enum Command {
     Disclose,
     /// Emit or verify golden vectors against the specification.
     Vectors(VectorsArgs),
+
+    /// Devnet provisioning: fee-payer keygen, credential + schema setup.
+    Admin(AdminArgs),
+}
+
+#[derive(clap::Args)]
+struct AdminArgs {
+    #[command(subcommand)]
+    action: AdminAction,
+}
+
+#[derive(Subcommand)]
+enum AdminAction {
+    /// Generate a Solana devnet keypair for paying fees and rent.
+    ///
+    /// Writes a standard Solana JSON-array keypair file (compatible with
+    /// solana-keygen and the solana CLI). Prints the base58 pubkey so the
+    /// operator can fund it via the devnet faucet.
+    ///
+    /// Refuses to overwrite an existing keypair. Delete or move it
+    /// explicitly if you intend to replace it.
+    KeygenFeePayer {
+        /// Path to write the keypair file. Default: `keys/devnet-fee-payer.json`.
+        #[arg(long, short = 'o', default_value = "keys/devnet-fee-payer.json")]
+        out: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -183,6 +210,7 @@ fn main() -> anyhow::Result<()> {
         Command::Sign(args) => cmd_sign(args),
         Command::Verify(args) => cmd_verify(args),
         Command::Vectors(args) => cmd_vectors(args),
+        Command::Admin(args) => cmd_admin(args),
         Command::Anchor
         | Command::Check
         | Command::Reanchor
@@ -465,4 +493,27 @@ fn cmd_vectors(args: VectorsArgs) -> anyhow::Result<()> {
             }
         }
     }
+}
+
+// ─── admin ─────────────────────────────────────────────────────────
+
+fn cmd_admin(args: AdminArgs) -> anyhow::Result<()> {
+    match args.action {
+        AdminAction::KeygenFeePayer { out } => cmd_admin_keygen_fee_payer(out),
+    }
+}
+
+fn cmd_admin_keygen_fee_payer(out: PathBuf) -> anyhow::Result<()> {
+    let pubkey_base58 = devnet::keygen_fee_payer(&out)?;
+
+    println!("wrote devnet fee-payer keypair: {}", out.display());
+    println!("pubkey (base58):                {}", pubkey_base58);
+    println!();
+    println!("Next: fund this pubkey on devnet before running provisioning.");
+    println!("  solana airdrop 1 {} --url devnet", pubkey_base58);
+    println!("  or use https://faucet.solana.com (pick devnet)");
+    println!();
+    println!("⚠ devnet only — do not fund this pubkey with mainnet SOL.");
+    println!("  See docs/devnet-setup.md for the full provisioning handshake.");
+    Ok(())
 }

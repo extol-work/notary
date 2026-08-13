@@ -10,7 +10,7 @@ Reference command-line implementation of the [Attestation Notary Specification](
 
 Version numbering follows semver 0.x while the specification remains draft v0.2.
 
-## What this is
+## Summary
 
 A single-binary Rust CLI that lets you:
 
@@ -24,10 +24,6 @@ A single-binary Rust CLI that lets you:
 - Round-trip against the specification's golden vectors (`attest vectors`)
 
 Each command corresponds to a concrete layer of the specification. The CLI is intentionally the smallest surface that exercises Layers 1 through 5 end-to-end.
-
-## What this is not
-
-Not a wallet. Not a signer service. Not a substrate. This binary reads and writes attestation files, delegates key custody to the operator (via keyfiles), and speaks to Solana over public RPC. Any deployment that needs KMS-managed keys, hardware wallets, or a signing service should treat this CLI as a reference for correctness and layer its own custody above it.
 
 ## Install
 

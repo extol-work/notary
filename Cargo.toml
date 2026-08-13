@@ -1,0 +1,42 @@
+[package]
+name = "notary"
+version = "0.1.0-beta.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Extol, Inc."]
+license = "Apache-2.0"
+description = "Reference CLI for the Attestation Notary Specification. Attest and notarize."
+repository = "https://github.com/extol-work/notary"
+readme = "README.md"
+keywords = ["attestation", "ed25519", "notary", "solana", "sworn"]
+categories = ["cryptography", "command-line-utilities"]
+
+[[bin]]
+name = "attest"
+path = "src/main.rs"
+
+[dependencies]
+# Cryptography
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+bs58 = "0.5"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+thiserror = "1"
+
+# Solana (added when Layer 4 lands; keep commented for skeleton)
+# solana-client = "2"
+# solana-sdk = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

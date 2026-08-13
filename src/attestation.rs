@@ -11,6 +11,7 @@
 //!   - The optional `payload` field is stored verbatim so verifiers can
 //!     recompute data_hash independently.
 
+use crate::anchor::AnchorRecord;
 use crate::canonical::{self, CanonicalFields, SPEC_VERSION_V02};
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +65,15 @@ pub struct Attestation {
     /// Optional payload. If present, verifier MUST confirm SHA-256(RFC 8785(payload)) == data_hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
+
+    /// On-chain notarization records. One entry per (attestation, cluster).
+    /// Appended by `attest anchor`; read by `attest check` and `attest reanchor`.
+    ///
+    /// Empty for a signed-but-not-yet-notarized attestation (Layer 1+2 only).
+    /// May contain multiple entries once an attestation has been anchored to
+    /// more than one cluster (e.g., devnet during beta, mainnet-beta on cutover).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<AnchorRecord>,
 }
 
 impl Attestation {

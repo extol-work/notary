@@ -7,6 +7,7 @@
 //! Spec: https://github.com/extol-work/sworn/blob/main/SPEC.md
 //! SAS binding: https://github.com/extol-work/sworn/blob/main/bindings/sas.md
 
+mod anchor;
 mod attestation;
 mod canonical;
 mod devnet;
@@ -54,12 +55,12 @@ enum Command {
     /// Verify a signed attestation off-chain.
     Verify(VerifyArgs),
 
-    /// Anchor an attestation to Solana Attestation Service. (Not yet implemented.)
-    Anchor,
-    /// Confirm an anchor is present on the substrate. (Not yet implemented.)
-    Check,
-    /// Re-anchor an attestation to a different cluster without re-signing. (Not yet implemented.)
-    Reanchor,
+    /// Anchor an attestation to Solana Attestation Service (Layer 4).
+    Anchor(AnchorArgs),
+    /// Confirm the on-chain anchor(s) match the local attestation record.
+    Check(CheckArgs),
+    /// Re-anchor an attestation to an additional cluster without re-signing.
+    Reanchor(ReanchorArgs),
     /// Issue or redeem a Layer 5 disclosure token. (Not yet implemented.)
     Disclose,
     /// Emit or verify golden vectors against the specification.
@@ -67,6 +68,65 @@ enum Command {
 
     /// Devnet provisioning: fee-payer keygen, credential + schema setup.
     Admin(AdminArgs),
+}
+
+#[derive(clap::Args)]
+struct AnchorArgs {
+    /// Path to the attestation JSON file (as produced by `attest sign`).
+    attestation: PathBuf,
+
+    /// Cluster to anchor to. Default: `devnet`.
+    #[arg(long, default_value = "devnet")]
+    cluster: String,
+
+    /// Fee-payer keypair (also the credential authority for the reference
+    /// deployment). Default: `keys/devnet-fee-payer.json`.
+    #[arg(long, default_value = "keys/devnet-fee-payer.json")]
+    fee_payer: PathBuf,
+
+    /// Override the credential PDA for this cluster (base58). Optional; the
+    /// notary CLI ships baked defaults for devnet.
+    #[arg(long)]
+    credential: Option<String>,
+
+    /// Override the schema PDA for this cluster (base58). Optional; the notary
+    /// CLI ships baked defaults for devnet.
+    #[arg(long)]
+    schema: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// Path to the attestation JSON file (with one or more `anchors` entries).
+    attestation: PathBuf,
+
+    /// Only check the anchor for this cluster. Default: check every recorded
+    /// anchor.
+    #[arg(long)]
+    cluster: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct ReanchorArgs {
+    /// Path to the attestation JSON file.
+    attestation: PathBuf,
+
+    /// New cluster to anchor to. Required: reanchoring to the same cluster
+    /// as an existing entry is a no-op and should use `anchor` instead.
+    #[arg(long)]
+    to: String,
+
+    /// Fee-payer keypair. Default: `keys/devnet-fee-payer.json`.
+    #[arg(long, default_value = "keys/devnet-fee-payer.json")]
+    fee_payer: PathBuf,
+
+    /// Override the credential PDA for the new cluster.
+    #[arg(long)]
+    credential: Option<String>,
+
+    /// Override the schema PDA for the new cluster.
+    #[arg(long)]
+    schema: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -243,10 +303,10 @@ fn main() -> anyhow::Result<()> {
         Command::Verify(args) => cmd_verify(args),
         Command::Vectors(args) => cmd_vectors(args),
         Command::Admin(args) => cmd_admin(args),
-        Command::Anchor
-        | Command::Check
-        | Command::Reanchor
-        | Command::Disclose => {
+        Command::Anchor(args) => cmd_anchor(args),
+        Command::Check(args) => cmd_check(args),
+        Command::Reanchor(args) => cmd_reanchor(args),
+        Command::Disclose => {
             anyhow::bail!(
                 "not yet implemented in this build. See README.md for the ship sequence."
             );
@@ -400,6 +460,7 @@ fn cmd_sign(args: SignArgs) -> anyhow::Result<()> {
         nonce: hex::encode(fields.nonce),
         signature: hex::encode(signature.to_bytes()),
         payload: Some(payload),
+        anchors: Vec::new(),
     };
 
     attestation.validate_shape()?; // Belt-and-suspenders self-check.
@@ -719,4 +780,194 @@ fn cmd_admin_provision_schema(fee_payer_path: PathBuf) -> anyhow::Result<()> {
     println!("tx:                    {}", sig);
     println!("SAS_SCHEMA:            {}", schema_pda);
     Ok(())
+}
+
+// ─── anchor (Layer 4) ────────────────────────────────────────────────
+
+fn cmd_anchor(args: AnchorArgs) -> anyhow::Result<()> {
+    let cluster = anchor::Cluster::parse(&args.cluster)?;
+    let credential = parse_optional_pubkey(&args.credential, "--credential")?;
+    let schema = parse_optional_pubkey(&args.schema, "--schema")?;
+
+    let att_json = fs::read_to_string(&args.attestation)
+        .with_context(|| format!("read {}", args.attestation.display()))?;
+    let mut att: Attestation = serde_json::from_str(&att_json)
+        .with_context(|| format!("parse {} as attestation JSON", args.attestation.display()))?;
+    att.validate_shape()?;
+
+    let fee_payer = devnet::load_keypair(&args.fee_payer)?;
+
+    println!("attestation:           {}", args.attestation.display());
+    println!("cluster:               {}", cluster.as_str());
+    println!("fee-payer:             {}", fee_payer.pubkey_base58());
+    println!();
+
+    let opts = anchor::AnchorOpts {
+        cluster,
+        credential,
+        schema,
+    };
+    let outcome = anchor::anchor(&att, &fee_payer, opts)?;
+
+    let record = match outcome {
+        anchor::AnchorOutcome::Anchored(r) => {
+            println!("anchored.");
+            r
+        }
+        anchor::AnchorOutcome::AlreadyAnchored(r) => {
+            println!("already anchored on this cluster. Nothing to do.");
+            r
+        }
+    };
+    println!("credential:            {}", record.credential);
+    println!("schema:                {}", record.schema);
+    println!("attestation PDA:       {}", record.attestation_pda);
+    if !record.tx_signature.is_empty() {
+        println!("tx:                    {}", record.tx_signature);
+    }
+    if record.anchored_at_block_time != 0 {
+        println!(
+            "anchored at:           slot {}, block time {}",
+            record.anchored_at_slot, record.anchored_at_block_time
+        );
+    }
+    if record.beta {
+        println!();
+        println!("(devnet beta anchor: this is not a mainnet notarization.)");
+    }
+
+    // Append to attestation.anchors if not already present. Write back.
+    let already_recorded = att
+        .anchors
+        .iter()
+        .any(|r| r.attestation_pda == record.attestation_pda && r.cluster == record.cluster);
+    if !already_recorded {
+        att.anchors.push(record);
+        let json = serde_json::to_string_pretty(&att)?;
+        fs::write(&args.attestation, json.as_bytes())
+            .with_context(|| format!("write {}", args.attestation.display()))?;
+        println!();
+        println!("attestation.json updated with new anchor record.");
+    }
+
+    Ok(())
+}
+
+// ─── check (Layer 4 verification) ────────────────────────────────────
+
+fn cmd_check(args: CheckArgs) -> anyhow::Result<()> {
+    let att_json = fs::read_to_string(&args.attestation)
+        .with_context(|| format!("read {}", args.attestation.display()))?;
+    let att: Attestation = serde_json::from_str(&att_json)
+        .with_context(|| format!("parse {} as attestation JSON", args.attestation.display()))?;
+    att.validate_shape()?;
+
+    if att.anchors.is_empty() {
+        anyhow::bail!(
+            "attestation {} has no anchors. Run `attest anchor` first.",
+            args.attestation.display()
+        );
+    }
+
+    let cluster_filter = args.cluster;
+    let mut checked = 0usize;
+    let mut passing = 0usize;
+
+    for record in &att.anchors {
+        if let Some(ref want) = cluster_filter {
+            if &record.cluster != want {
+                continue;
+            }
+        }
+
+        println!("cluster:               {}", record.cluster);
+        println!("attestation PDA:       {}", record.attestation_pda);
+
+        let result = anchor::check(record, &att)?;
+        checked += 1;
+
+        if result.matches_local {
+            passing += 1;
+            println!("status:                MATCHES local record");
+        } else {
+            println!("status:                MISMATCH");
+            for d in &result.diagnostics {
+                println!("  · {}", d);
+            }
+        }
+        println!(
+            "on-chain spec_version: {}",
+            result.on_chain_spec_version
+        );
+        println!(
+            "on-chain hash:         {}",
+            hex::encode(result.on_chain_attestation_hash)
+        );
+        println!(
+            "on-chain signer time:  {}",
+            result.on_chain_signer_asserted_at
+        );
+        println!();
+    }
+
+    if checked == 0 {
+        anyhow::bail!(
+            "no anchors matched the filter (--cluster {:?}). Available: {:?}",
+            cluster_filter,
+            att.anchors.iter().map(|r| &r.cluster).collect::<Vec<_>>()
+        );
+    }
+
+    if passing == checked {
+        println!("PASS: {passing}/{checked} anchor(s) match the local record");
+        Ok(())
+    } else {
+        anyhow::bail!("FAIL: {}/{} anchor(s) matched", passing, checked);
+    }
+}
+
+// ─── reanchor (Layer 4 additional-cluster commitment) ────────────────
+
+fn cmd_reanchor(args: ReanchorArgs) -> anyhow::Result<()> {
+    let cluster = anchor::Cluster::parse(&args.to)?;
+
+    // Load and confirm the attestation is not already anchored to this cluster.
+    let att_json = fs::read_to_string(&args.attestation)
+        .with_context(|| format!("read {}", args.attestation.display()))?;
+    let att: Attestation = serde_json::from_str(&att_json)
+        .with_context(|| format!("parse {} as attestation JSON", args.attestation.display()))?;
+    if let Some(existing) = att.anchors.iter().find(|r| r.cluster == cluster.as_str()) {
+        anyhow::bail!(
+            "attestation is already anchored to {}: {}. Use `attest anchor` \
+             for idempotent re-checking on the same cluster; reanchor requires \
+             a new cluster.",
+            existing.cluster,
+            existing.attestation_pda
+        );
+    }
+
+    // Delegate to the normal anchor path with the new cluster. The signature
+    // and canonical bytes are unchanged; only a new SAS PDA is created.
+    let anchor_args = AnchorArgs {
+        attestation: args.attestation,
+        cluster: cluster.as_str().to_string(),
+        fee_payer: args.fee_payer,
+        credential: args.credential,
+        schema: args.schema,
+    };
+    cmd_anchor(anchor_args)
+}
+
+fn parse_optional_pubkey(
+    s: &Option<String>,
+    label: &str,
+) -> anyhow::Result<Option<solana_sdk::pubkey::Pubkey>> {
+    use std::str::FromStr;
+    match s {
+        None => Ok(None),
+        Some(s) => Ok(Some(
+            solana_sdk::pubkey::Pubkey::from_str(s)
+                .with_context(|| format!("parse {label} as base58 pubkey"))?,
+        )),
+    }
 }

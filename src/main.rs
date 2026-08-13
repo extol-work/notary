@@ -10,6 +10,7 @@
 mod attestation;
 mod canonical;
 mod keyfile;
+mod sas;
 mod vectors;
 
 use anyhow::Context;

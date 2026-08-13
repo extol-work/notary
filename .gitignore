@@ -21,3 +21,15 @@ Cargo.lock
 /hello.json
 /*.attestation.json
 /*.payload.json
+
+# Solana-format keypair files (JSON array of 64 bytes). Solana's convention
+# is to store keypairs as `[NN,NN,...]` JSON arrays; the CLI ecosystem uses
+# .json suffixes for these, which makes them dangerous to distinguish from
+# generic JSON. Block anything under keys/ or with -keypair.json suffix,
+# and any file matching Solana's default id.json name.
+/keys/
+*-keypair.json
+*.keypair.json
+/id.json
+/devnet-fee-payer.json
+/mainnet-fee-payer.json

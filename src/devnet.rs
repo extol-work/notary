@@ -2,14 +2,13 @@
 //!
 //! This module carries the operator-facing setup commands:
 //!
-//! - `attest admin keygen-fee-payer` — generate a Solana devnet keypair that
+//! - `attest admin keygen-fee-payer` generates a Solana devnet keypair that
 //!   pays transaction fees and rent for provisioning + anchoring.
-//! - `attest admin provision-credential` — create the SAS credential PDA (TBD).
-//! - `attest admin provision-schema` — create the SAS schema PDA (TBD).
-//!
-//! The credential and schema provisioning commands land alongside `attest
-//! anchor` once the fee-payer has been funded. This commit ships only the
-//! keygen so the funding handshake with the operator can begin.
+//! - `attest admin balance` queries the funded balance via devnet RPC.
+//! - `attest admin provision-credential` creates the SAS credential PDA
+//!   (idempotent).
+//! - `attest admin provision-schema` creates the SAS schema PDA under the
+//!   credential (idempotent).
 //!
 //! ## Keypair file format
 //!
@@ -28,6 +27,66 @@ use solana_sdk::signature::{Keypair, Signer};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+
+/// Devnet RPC endpoint. Public, unmetered.
+pub const DEVNET_RPC: &str = "https://api.devnet.solana.com";
+
+/// A loaded Solana keypair plus derivation cache.
+pub struct LoadedKeypair {
+    pub sdk_keypair: Keypair,
+    pub pubkey_bytes: [u8; 32],
+}
+
+impl LoadedKeypair {
+    /// Base58-encoded public key.
+    pub fn pubkey_base58(&self) -> String {
+        bs58::encode(self.pubkey_bytes).into_string()
+    }
+}
+
+/// Read a Solana JSON-array keypair file (as written by [`keygen_fee_payer`]
+/// or `solana-keygen`) and return the loaded keypair.
+///
+/// Refuses to load a keypair whose stored pubkey does not match the pubkey
+/// derived from the seed. This catches file corruption and defends against
+/// a malicious edit that would substitute the pubkey while leaving the seed
+/// intact.
+pub fn load_keypair(path: &Path) -> anyhow::Result<LoadedKeypair> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("read keypair {}", path.display()))?;
+    let arr: Vec<u8> = serde_json::from_str(&contents)
+        .with_context(|| format!("parse {} as Solana JSON-array keypair", path.display()))?;
+    if arr.len() != 64 {
+        anyhow::bail!(
+            "keypair {} is {} bytes; expected 64 (32-byte seed + 32-byte pubkey)",
+            path.display(),
+            arr.len()
+        );
+    }
+
+    let sdk_keypair = Keypair::try_from(&arr[..])
+        .map_err(|e| anyhow::anyhow!("solana-sdk rejected keypair bytes: {e}"))?;
+    let pubkey_bytes = sdk_keypair.pubkey().to_bytes();
+
+    // Sanity-check: derive the pubkey from the seed via ed25519-dalek and
+    // compare. If the stored pubkey has been tampered with, this fails loud.
+    let seed: [u8; 32] = arr[..32].try_into().unwrap();
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let derived = signing_key.verifying_key().to_bytes();
+    if derived != pubkey_bytes {
+        anyhow::bail!(
+            "keypair {} is inconsistent: stored pubkey {} does not match seed-derived pubkey {}",
+            path.display(),
+            hex::encode(pubkey_bytes),
+            hex::encode(derived)
+        );
+    }
+
+    Ok(LoadedKeypair {
+        sdk_keypair,
+        pubkey_bytes,
+    })
+}
 
 /// Generate a fresh Solana keypair and write it to `path` in the standard
 /// Solana JSON-array format. Refuses to overwrite an existing file (the
@@ -125,6 +184,52 @@ mod tests {
         let kp = Keypair::try_from(&arr[..]).expect("Keypair::try_from");
         let sdk_base58 = kp.pubkey().to_string();
         assert_eq!(sdk_base58, pubkey_base58, "SDK pubkey must match reported pubkey");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_keypair_round_trips_a_generated_keypair() {
+        let mut path = env::temp_dir();
+        path.push(format!("notary-devnet-kp-load-{}.json", std::process::id()));
+        let _ = fs::remove_file(&path);
+
+        let expected_pubkey = keygen_fee_payer(&path).expect("keygen");
+        let loaded = load_keypair(&path).expect("load");
+        assert_eq!(loaded.pubkey_base58(), expected_pubkey);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_keypair_rejects_tampered_pubkey() {
+        let mut path = env::temp_dir();
+        path.push(format!(
+            "notary-devnet-kp-tamper-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        keygen_fee_payer(&path).expect("keygen");
+        let contents = fs::read_to_string(&path).expect("read");
+        let mut arr: Vec<u8> = serde_json::from_str(&contents).expect("parse");
+        arr[63] ^= 0xFF; // flip a byte in the stored pubkey
+        fs::write(&path, serde_json::to_string(&arr).unwrap()).expect("write");
+
+        let result = load_keypair(&path);
+        assert!(result.is_err(), "load must reject tampered pubkey");
+        // Either error path is acceptable defense: solana-sdk's own signature
+        // check often catches it first with "signature error", but our
+        // ed25519-dalek cross-check is defense in depth.
+        let err_msg = result.err().unwrap().to_string();
+        let looks_like_rejection = err_msg.contains("inconsistent")
+            || err_msg.contains("does not match")
+            || err_msg.contains("solana-sdk rejected")
+            || err_msg.contains("signature error");
+        assert!(
+            looks_like_rejection,
+            "expected rejection of tampered pubkey, got: {err_msg}"
+        );
 
         let _ = fs::remove_file(&path);
     }

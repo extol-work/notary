@@ -11,6 +11,7 @@ mod attestation;
 mod canonical;
 mod devnet;
 mod keyfile;
+mod provision;
 mod sas;
 mod vectors;
 
@@ -88,6 +89,37 @@ enum AdminAction {
         /// Path to write the keypair file. Default: `keys/devnet-fee-payer.json`.
         #[arg(long, short = 'o', default_value = "keys/devnet-fee-payer.json")]
         out: PathBuf,
+    },
+    /// Query the devnet balance of a base58 pubkey.
+    ///
+    /// Convenience so the operator does not need the solana CLI installed
+    /// to confirm the fee-payer was funded before provisioning.
+    Balance {
+        /// Base58 pubkey to query. Defaults to reading the pubkey from the
+        /// keypair at `keys/devnet-fee-payer.json`.
+        #[arg(long)]
+        pubkey: Option<String>,
+    },
+    /// Create the SAS credential PDA on devnet (SAS instruction 0).
+    ///
+    /// One-time per environment. Idempotent: if the PDA already exists,
+    /// prints the address and exits success. The credential authority is
+    /// the fee-payer keypair.
+    ProvisionCredential {
+        /// Path to the fee-payer keypair (also the credential authority).
+        #[arg(long, default_value = "keys/devnet-fee-payer.json")]
+        fee_payer: PathBuf,
+    },
+    /// Create the SAS schema PDA under the notary CLI credential (SAS instruction 1).
+    ///
+    /// One-time per environment. Idempotent: if the PDA already exists,
+    /// prints the address and exits success. Schema layout is fixed per
+    /// bindings/sas.md §5 (v0.2 receipt: spec_version + attestation_hash +
+    /// signer_asserted_at).
+    ProvisionSchema {
+        /// Path to the fee-payer keypair (also the credential authority).
+        #[arg(long, default_value = "keys/devnet-fee-payer.json")]
+        fee_payer: PathBuf,
     },
 }
 
@@ -500,6 +532,11 @@ fn cmd_vectors(args: VectorsArgs) -> anyhow::Result<()> {
 fn cmd_admin(args: AdminArgs) -> anyhow::Result<()> {
     match args.action {
         AdminAction::KeygenFeePayer { out } => cmd_admin_keygen_fee_payer(out),
+        AdminAction::Balance { pubkey } => cmd_admin_balance(pubkey),
+        AdminAction::ProvisionCredential { fee_payer } => {
+            cmd_admin_provision_credential(fee_payer)
+        }
+        AdminAction::ProvisionSchema { fee_payer } => cmd_admin_provision_schema(fee_payer),
     }
 }
 
@@ -513,7 +550,173 @@ fn cmd_admin_keygen_fee_payer(out: PathBuf) -> anyhow::Result<()> {
     println!("  solana airdrop 1 {} --url devnet", pubkey_base58);
     println!("  or use https://faucet.solana.com (pick devnet)");
     println!();
-    println!("⚠ devnet only — do not fund this pubkey with mainnet SOL.");
+    println!("⚠ devnet only. Do not fund this pubkey with mainnet SOL.");
     println!("  See docs/devnet-setup.md for the full provisioning handshake.");
+    Ok(())
+}
+
+fn cmd_admin_balance(pubkey_arg: Option<String>) -> anyhow::Result<()> {
+    use solana_client::rpc_client::RpcClient;
+    use solana_sdk::commitment_config::CommitmentConfig;
+    use solana_sdk::pubkey::Pubkey;
+    use std::str::FromStr;
+
+    let pubkey = match pubkey_arg {
+        Some(s) => Pubkey::from_str(&s).context("parse --pubkey as base58")?,
+        None => {
+            let default_path = PathBuf::from("keys/devnet-fee-payer.json");
+            devnet::load_keypair(&default_path)
+                .context("no --pubkey given and default keypair not readable at keys/devnet-fee-payer.json")?
+                .pubkey_base58()
+                .parse()
+                .expect("stored pubkey parses as base58 pubkey")
+        }
+    };
+
+    let client = RpcClient::new_with_commitment(
+        devnet::DEVNET_RPC.to_string(),
+        CommitmentConfig::confirmed(),
+    );
+    let lamports = client
+        .get_balance(&pubkey)
+        .with_context(|| format!("query balance for {pubkey}"))?;
+
+    println!("pubkey:   {}", pubkey);
+    println!("cluster:  devnet ({})", devnet::DEVNET_RPC);
+    println!(
+        "balance:  {} lamports = {} SOL",
+        lamports,
+        lamports as f64 / 1_000_000_000.0
+    );
+    if lamports == 0 {
+        println!();
+        println!("⚠ zero balance. Fund via https://faucet.solana.com or:");
+        println!("  solana airdrop 1 {} --url devnet", pubkey);
+    }
+    Ok(())
+}
+
+fn cmd_admin_provision_credential(fee_payer_path: PathBuf) -> anyhow::Result<()> {
+    use solana_client::rpc_client::RpcClient;
+    use solana_sdk::commitment_config::CommitmentConfig;
+    use solana_sdk::signature::Signer as SolanaSigner;
+    use solana_sdk::transaction::Transaction;
+
+    let fp = devnet::load_keypair(&fee_payer_path)?;
+    let authority = fp.sdk_keypair.pubkey();
+    let (credential_pda, _bump) =
+        sas::find_credential_pda(&authority, provision::CREDENTIAL_NAME_DEVNET.as_bytes());
+
+    println!("fee-payer / authority: {}", authority);
+    println!("credential name:       {}", provision::CREDENTIAL_NAME_DEVNET);
+    println!("credential PDA:        {}", credential_pda);
+    println!();
+
+    let client = RpcClient::new_with_commitment(
+        devnet::DEVNET_RPC.to_string(),
+        CommitmentConfig::confirmed(),
+    );
+
+    // Idempotency check: SAS returns an account for an existing PDA.
+    if client.get_account(&credential_pda).is_ok() {
+        println!("credential already exists on devnet. Nothing to do.");
+        println!("(SAS_CREDENTIAL for env: {})", credential_pda);
+        return Ok(());
+    }
+
+    let ix = provision::create_credential_ix(
+        &authority,
+        &authority,
+        &credential_pda,
+        provision::CREDENTIAL_NAME_DEVNET,
+        &[authority],
+    );
+    let recent_blockhash = client
+        .get_latest_blockhash()
+        .context("get_latest_blockhash")?;
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&authority),
+        &[&fp.sdk_keypair],
+        recent_blockhash,
+    );
+    let sig = client
+        .send_and_confirm_transaction_with_spinner(&tx)
+        .context("send create_credential tx")?;
+
+    println!("credential created.");
+    println!("tx:                    {}", sig);
+    println!("SAS_CREDENTIAL:        {}", credential_pda);
+    Ok(())
+}
+
+fn cmd_admin_provision_schema(fee_payer_path: PathBuf) -> anyhow::Result<()> {
+    use solana_client::rpc_client::RpcClient;
+    use solana_sdk::commitment_config::CommitmentConfig;
+    use solana_sdk::signature::Signer as SolanaSigner;
+    use solana_sdk::transaction::Transaction;
+
+    let fp = devnet::load_keypair(&fee_payer_path)?;
+    let authority = fp.sdk_keypair.pubkey();
+    let (credential_pda, _) =
+        sas::find_credential_pda(&authority, provision::CREDENTIAL_NAME_DEVNET.as_bytes());
+    let (schema_pda, _) = sas::find_schema_pda(
+        &credential_pda,
+        provision::SCHEMA_NAME.as_bytes(),
+        provision::SCHEMA_VERSION,
+    );
+
+    println!("fee-payer / authority: {}", authority);
+    println!("credential PDA:        {}", credential_pda);
+    println!("schema name:           {} (v{})", provision::SCHEMA_NAME, provision::SCHEMA_VERSION);
+    println!("schema PDA:            {}", schema_pda);
+    println!();
+
+    let client = RpcClient::new_with_commitment(
+        devnet::DEVNET_RPC.to_string(),
+        CommitmentConfig::confirmed(),
+    );
+
+    // Credential must exist first.
+    if client.get_account(&credential_pda).is_err() {
+        anyhow::bail!(
+            "credential PDA {} does not exist. Run `attest admin provision-credential` first.",
+            credential_pda
+        );
+    }
+
+    // Idempotency check.
+    if client.get_account(&schema_pda).is_ok() {
+        println!("schema already exists on devnet. Nothing to do.");
+        println!("(SAS_SCHEMA for env: {})", schema_pda);
+        return Ok(());
+    }
+
+    let ix = provision::create_schema_ix(
+        &authority,
+        &authority,
+        &credential_pda,
+        &schema_pda,
+        provision::SCHEMA_NAME,
+        provision::SCHEMA_DESCRIPTION,
+        provision::ANS_V2_SCHEMA_LAYOUT,
+        provision::ANS_V2_FIELD_NAMES,
+    );
+    let recent_blockhash = client
+        .get_latest_blockhash()
+        .context("get_latest_blockhash")?;
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&authority),
+        &[&fp.sdk_keypair],
+        recent_blockhash,
+    );
+    let sig = client
+        .send_and_confirm_transaction_with_spinner(&tx)
+        .context("send create_schema tx")?;
+
+    println!("schema created.");
+    println!("tx:                    {}", sig);
+    println!("SAS_SCHEMA:            {}", schema_pda);
     Ok(())
 }

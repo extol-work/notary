@@ -52,6 +52,24 @@ pub const SAS_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
     92, 171, 93, 160, 46, 86, 103, 139, 39, 19, 56, 42, 243, 116, 89, 183,
 ]);
 
+/// Reference deployment addresses on devnet.
+///
+/// Provisioned via `attest admin provision-credential` and
+/// `attest admin provision-schema` on 2026-08-13 under fee-payer
+/// `ySRnUCkb6FFgz6NThWdJbRbQJJdwb2uo4QMvG5TbSez`. These are the addresses
+/// `attest anchor`, `attest check`, and `attest reanchor` default to on
+/// devnet. Operators running their own deployment override via
+/// `--credential` and `--schema` on those subcommands.
+pub mod devnet_reference {
+    /// SAS credential PDA: name = "notary-cli-devnet", authority = fee-payer above.
+    pub const CREDENTIAL: &str = "2wp93cFgFeZANui2rbDbFFkCju1f8NaaBBa9uuXeKZQw";
+    /// SAS schema PDA: name = "ans-v2-notary", version = 1.
+    ///
+    /// Schema layout `[1, 13, 8]` (U16, VecU8, I64) corresponding to
+    /// `spec_version || attestation_hash || signer_asserted_at`.
+    pub const SCHEMA: &str = "Cnu2C6jK6GpUdjWXjacJqQyzYwzr3mXpRKSj7gmrn4wW";
+}
+
 /// PDA seeds for SAS accounts.
 pub mod seed {
     pub const CREDENTIAL: &[u8] = b"credential";
@@ -68,52 +86,55 @@ pub mod seed {
 /// These values match the Shank-generated ordering in the SAS program source
 /// and are stable across mainnet and devnet deployments. Do not reorder or
 /// renumber; any change would break every existing SAS attestation.
+///
+/// Verified against SAS `program/src/instructions.rs`:
+/// <https://github.com/solana-foundation/solana-attestation-service/blob/main/program/src/instructions.rs>
 pub mod discriminator {
     pub const CREATE_CREDENTIAL: u8 = 0;
+    pub const CREATE_SCHEMA: u8 = 1;
     pub const CHANGE_AUTHORIZED_SIGNERS: u8 = 3;
-    pub const CREATE_SCHEMA: u8 = 4;
     pub const CREATE_ATTESTATION: u8 = 6;
     pub const CLOSE_ATTESTATION: u8 = 7;
 }
 
 /// SAS account data section length for a conforming ANS attestation.
 ///
-/// Per bindings/sas.md §5: `spec_version || attestation_hash || signer_asserted_at`
-/// = 2 + 32 + 8 = 42 bytes exactly. Nothing else. Any additional field turns
-/// into a searchable memcmp target and violates the non-walkability discipline
-/// of ANS §5.1.
-pub const NOTARY_SCHEMA_DATA_LEN: usize = 42;
+/// ## Wire layout: 46 bytes total, not 42
+///
+/// `bindings/sas.md §5` names the *semantic* payload as 42 bytes:
+/// `spec_version (2) || attestation_hash (32) || signer_asserted_at (8)`.
+///
+/// SAS's schema type system (see the `SchemaDataTypes` enum at
+/// [solana-attestation-service/program/src/state/schema.rs](https://github.com/solana-foundation/solana-attestation-service/blob/main/program/src/state/schema.rs))
+/// has no fixed-length byte array type. A 32-byte hash MUST be encoded as
+/// `VecU8`, which adds a 4-byte little-endian length prefix. On the wire:
+///
+/// ```text
+///   offset  0.. 2   spec_version           (u16 LE)                = 2 bytes
+///   offset  2.. 6   attestation_hash len   (u32 LE, always = 32)   = 4 bytes
+///   offset  6..38   attestation_hash       (32 bytes)              = 32 bytes
+///   offset 38..46   signer_asserted_at     (i64 LE)                = 8 bytes
+/// ```
+///
+/// The extra 4 bytes do not change the non-walkability property (the PDA
+/// seed is `SHA-256(canonical_bytes)`, opaque with respect to every field),
+/// but they are visible in the on-chain account.
+///
+/// `bindings/sas.md §5` should be corrected to reflect the 46-byte wire size.
+/// Follow-up doc fix; not blocking on-chain provisioning.
+pub const ANS_V2_SPEC_VERSION_LEN: usize = 2;
+pub const ANS_V2_ATTESTATION_HASH_LEN: usize = 32;
+pub const ANS_V2_SIGNER_ASSERTED_AT_LEN: usize = 8;
+pub const ANS_V2_DATA_SECTION_WIRE_LEN: usize =
+    ANS_V2_SPEC_VERSION_LEN + 4 + ANS_V2_ATTESTATION_HASH_LEN + ANS_V2_SIGNER_ASSERTED_AT_LEN;
 
-/// Byte offsets inside the 42-byte notary attestation data section.
+/// Byte offsets inside the 46-byte on-wire notary attestation data section.
 pub mod attestation_data_offset {
     pub const SPEC_VERSION: usize = 0; // u16 LE, 2 bytes
-    pub const ATTESTATION_HASH: usize = 2; // 32 bytes (SHA-256 of canonical bytes)
-    pub const SIGNER_ASSERTED_AT: usize = 34; // i64 LE, 8 bytes
-                                              // 34 + 8 = 42
-}
-
-/// Encode the 42-byte SAS attestation data section per bindings/sas.md §5.
-///
-/// Layout:
-/// ```text
-/// spec_version         (2 bytes, u16 LE)
-/// attestation_hash     (32 bytes, SHA-256 of canonical bytes)
-/// signer_asserted_at   (8 bytes, i64 LE, Unix seconds)
-/// ```
-pub fn encode_notary_data(
-    spec_version: u16,
-    attestation_hash: &[u8; 32],
-    signer_asserted_at: i64,
-) -> [u8; NOTARY_SCHEMA_DATA_LEN] {
-    let mut out = [0u8; NOTARY_SCHEMA_DATA_LEN];
-    out[attestation_data_offset::SPEC_VERSION..attestation_data_offset::SPEC_VERSION + 2]
-        .copy_from_slice(&spec_version.to_le_bytes());
-    out[attestation_data_offset::ATTESTATION_HASH..attestation_data_offset::ATTESTATION_HASH + 32]
-        .copy_from_slice(attestation_hash);
-    out[attestation_data_offset::SIGNER_ASSERTED_AT
-        ..attestation_data_offset::SIGNER_ASSERTED_AT + 8]
-        .copy_from_slice(&signer_asserted_at.to_le_bytes());
-    out
+    pub const ATTESTATION_HASH_LEN: usize = 2; // u32 LE prefix, always 32
+    pub const ATTESTATION_HASH: usize = 6; // 32 bytes (SHA-256 of canonical bytes)
+    pub const SIGNER_ASSERTED_AT: usize = 38; // i64 LE, 8 bytes
+                                              // 38 + 8 = 46
 }
 
 /// Derive the SAS Credential PDA.
@@ -190,28 +211,53 @@ mod tests {
     }
 
     #[test]
-    fn notary_data_section_is_exactly_42_bytes() {
-        // ANS §5.1 non-walkability discipline: 42 bytes, no more, no less.
-        // Any drift here (padding, extra field, alignment) would break
-        // cross-implementation substrate reads.
-        assert_eq!(NOTARY_SCHEMA_DATA_LEN, 42);
-        let data = encode_notary_data(3, &[0xAB; 32], 1_780_000_000);
-        assert_eq!(data.len(), 42);
+    fn notary_data_wire_len_is_46_bytes() {
+        // SAS's VecU8 encoding forces a 4-byte length prefix on the 32-byte
+        // hash. Semantic payload is 42 bytes; on-wire is 46. If either the
+        // constant or the offset table drifts, this fires.
+        assert_eq!(ANS_V2_DATA_SECTION_WIRE_LEN, 46);
+        assert_eq!(
+            attestation_data_offset::SIGNER_ASSERTED_AT + ANS_V2_SIGNER_ASSERTED_AT_LEN,
+            46
+        );
     }
 
     #[test]
-    fn notary_data_layout_puts_fields_at_expected_offsets() {
-        let spec_version: u16 = 3;
-        let attestation_hash = [0x77u8; 32];
-        let signer_asserted_at: i64 = 1_780_000_000;
-        let data = encode_notary_data(spec_version, &attestation_hash, signer_asserted_at);
+    fn devnet_reference_addresses_match_baked_pdas() {
+        // The reference addresses were provisioned under a specific fee-payer
+        // authority. If either the SAS_PROGRAM_ID literal or the PDA seed
+        // derivation drifts, the baked strings would no longer match, and
+        // any anchor/check operation would silently target a wrong PDA.
+        //
+        // Guard: re-derive the PDAs from the known-fixed authority pubkey and
+        // credential/schema names, then assert against the baked strings.
+        use std::str::FromStr;
 
-        // spec_version: bytes 0..2 little-endian
-        assert_eq!(&data[0..2], &spec_version.to_le_bytes());
-        // attestation_hash: bytes 2..34
-        assert_eq!(&data[2..34], &attestation_hash);
-        // signer_asserted_at: bytes 34..42 little-endian
-        assert_eq!(&data[34..42], &signer_asserted_at.to_le_bytes());
+        let authority = Pubkey::from_str("ySRnUCkb6FFgz6NThWdJbRbQJJdwb2uo4QMvG5TbSez").unwrap();
+        let (credential, _) = find_credential_pda(&authority, b"notary-cli-devnet");
+        assert_eq!(
+            credential.to_string(),
+            devnet_reference::CREDENTIAL,
+            "baked devnet CREDENTIAL address must equal what the seeds derive"
+        );
+
+        let (schema, _) = find_schema_pda(&credential, b"ans-v2-notary", 1);
+        assert_eq!(
+            schema.to_string(),
+            devnet_reference::SCHEMA,
+            "baked devnet SCHEMA address must equal what the seeds derive"
+        );
+    }
+
+    #[test]
+    fn attestation_data_offsets_agree_with_layout_codes() {
+        // Field ordering must match schema layout codes [1, 13, 8] and the
+        // ANS_V2_FIELD_NAMES declaration in provision.rs. If a reordering
+        // ever happens it would break every anchor + every reader.
+        assert_eq!(attestation_data_offset::SPEC_VERSION, 0);
+        assert_eq!(attestation_data_offset::ATTESTATION_HASH_LEN, 2);
+        assert_eq!(attestation_data_offset::ATTESTATION_HASH, 6);
+        assert_eq!(attestation_data_offset::SIGNER_ASSERTED_AT, 38);
     }
 
     #[test]

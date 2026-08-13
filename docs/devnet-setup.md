@@ -1,89 +1,86 @@
 # Devnet setup
 
-This document describes how the notary CLI's Layer 4 (SAS notarization on
-Solana devnet) will be provisioned. As of this commit, only the constants
-and PDA-derivation helpers are in place (see `src/sas.rs`); the actual
-`attest anchor`, `attest check`, and `attest reanchor` commands land in the
-next commit alongside the credential and schema provisioning code.
+The notary CLI's Layer 4 (SAS notarization on Solana devnet) is provisioned.
+The reference deployment addresses below are baked into `src/sas.rs`
+(`devnet_reference` module) and are the defaults for `attest anchor`,
+`attest check`, and `attest reanchor` on devnet.
 
-The scope of this document is what the next session will do and what
-operator input is needed before that session starts.
+## Reference deployment addresses (devnet)
 
----
+| Item | Address |
+|---|---|
+| SAS program | `22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG` |
+| Credential (`notary-cli-devnet`) | `2wp93cFgFeZANui2rbDbFFkCju1f8NaaBBa9uuXeKZQw` |
+| Schema (`ans-v2-notary` v1) | `Cnu2C6jK6GpUdjWXjacJqQyzYwzr3mXpRKSj7gmrn4wW` |
+| Fee-payer / credential authority | `ySRnUCkb6FFgz6NThWdJbRbQJJdwb2uo4QMvG5TbSez` |
 
-## What the CLI needs on-chain
+Provisioned 2026-08-13. Schema layout `[1, 13, 8]` (U16, VecU8, I64)
+corresponding to the ANS v0.2 receipt: `spec_version || attestation_hash ||
+signer_asserted_at`.
 
-A conforming notary deployment requires two pieces of SAS state to exist on
-devnet before any attestation can be anchored:
+## Wire format note
 
-1. **A credential PDA** derived under a keypair we control (the "authority").
-   The credential is the top-level object; it names who can add or remove
-   authorized signers. For the notary CLI we use a dedicated credential
-   distinct from Extol's community-attestation credential (`extol-devnet-v1`
-   and similar). Proposed name: `notary-cli-devnet`.
+`bindings/sas.md §5` names the semantic payload as 42 bytes. On the actual
+SAS account, the data section is 46 bytes: a `VecU8` type carries a 4-byte
+little-endian length prefix, and SAS has no fixed-length byte array type
+suitable for the 32-byte hash. Layout:
 
-2. **A schema PDA** under that credential, with a 42-byte data section
-   layout: `spec_version (2 bytes) || attestation_hash (32 bytes) ||
-   signer_asserted_at (8 bytes)`. Proposed name: `ans-v2-notary`, version 1.
+```
+  offset  0.. 2   spec_version           (u16 LE)                = 2 bytes
+  offset  2.. 6   attestation_hash len   (u32 LE, always = 32)   = 4 bytes
+  offset  6..38   attestation_hash       (32 bytes)              = 32 bytes
+  offset 38..46   signer_asserted_at     (i64 LE)                = 8 bytes
+```
 
-Both are one-time provisioning steps per environment. Once provisioned, the
-credential and schema addresses are baked into the CLI as configuration
-(devnet defaults; overridable via `--credential` and `--schema` for future
-environments).
+The extra 4 bytes do not weaken the non-walkability property (the PDA seed
+is `SHA-256(canonical_bytes)`, opaque with respect to every field). It is a
+small correction that should land as a doc fix on `extol-work/sworn/bindings/sas.md`.
 
-## What we need before provisioning
+## Provisioning a fresh deployment
 
-A Solana devnet keypair with enough SOL to pay for:
+An operator who wants their own credential (rather than using the reference
+deployment) runs:
 
-- Rent for the credential PDA (approximately 0.002 SOL)
-- Rent for the schema PDA (approximately 0.003 SOL)
-- Ongoing transaction fees for each `attest anchor` operation (approximately
-  0.000005 SOL per anchor, plus rent for the attestation account of
-  approximately 0.0007 SOL)
+```
+attest admin keygen-fee-payer               # generate keypair, print pubkey
+# operator funds the pubkey with ~1 devnet SOL via
+#   solana airdrop 1 <pubkey> --url devnet
+#   or https://faucet.solana.com
+attest admin balance                        # confirm funding landed
+attest admin provision-credential           # SAS instruction 0
+attest admin provision-schema               # SAS instruction 1
+```
 
-For the initial provisioning and a comfortable devnet operating buffer, one
-devnet SOL is more than sufficient (approximately 1300 anchor operations
-worth of rent, or unlimited test iterations of provisioning cycles).
+All four subcommands accept `--fee-payer <path>` if the keypair is not at
+`keys/devnet-fee-payer.json`. `provision-credential` and `provision-schema`
+are idempotent: re-running them prints the existing address and exits
+success. Total provisioning cost is approximately 0.004 SOL.
 
-## Where the fee-payer keypair lives
+## Overriding the reference deployment
 
-The keypair file will be generated locally when the next session starts. It
-will live at `keys/devnet-fee-payer.json` in Solana's standard JSON-array
-format. That path is gitignored (see `.gitignore` `keys/` and
-`/devnet-fee-payer.json` entries). The pubkey is safe to share; the private
-seed inside the file must not leave the local machine.
+`attest anchor`, `attest check`, and `attest reanchor` (upcoming) accept
+`--credential <base58>` and `--schema <base58>` to target a non-reference
+deployment. With no flags, they use the addresses above.
 
-## Handshake with the operator
+## Fee-payer keypair storage
 
-1. Next session generates the keypair, prints the base58 pubkey.
-2. Operator funds the pubkey via
-   [faucet.solana.com](https://faucet.solana.com) or
-   `solana airdrop 1 <pubkey> --url devnet` (needs 1 devnet SOL).
-3. Session runs the provisioning step (`attest admin provision-credential`
-   and `attest admin provision-schema` or equivalent, TBD in that commit).
-4. Session bakes the resulting credential and schema addresses into the CLI
-   as devnet defaults and adds them to this document.
-5. Session verifies with a full round-trip:
-   `attest sign` → `attest anchor` → `attest check`.
+The keypair lives at `keys/devnet-fee-payer.json` in Solana's standard
+JSON-array format. Compatible with `solana-keygen`, `solana-cli`, and any
+wallet that reads Solana keypair files.
 
-## What operators of other deployments do
+- Path is gitignored (`.gitignore` blocks `/keys/`).
+- File permissions are restricted to owner-read-only on creation.
+- The pubkey is safe to share; the seed inside must not leave the local
+  machine.
 
-The same steps apply to any operator who wants to run the notary CLI
-against their own devnet or mainnet credential (rather than the reference
-deployment's credential). The provisioning subcommands accept
-`--authority` and `--credential-name` so different operators produce
-different PDAs without collision. Once provisioned, the operator can pass
-`--credential <pubkey> --schema <pubkey>` to `attest anchor` to target
-their own deployment.
+## Non-goals
 
-## Non-goals for this document
-
-- Mainnet setup. Mainnet provisioning waits until Umbriel confirms the
+- **Mainnet setup.** Mainnet provisioning waits until Umbriel confirms the
   essay-endorsement surface is going live in production (per the EXT-248
   scope). Until then, mainnet is a note-only concern.
-- Rotation. Key rotation for the fee-payer or credential authority is
+- **Rotation.** Key rotation for the fee-payer or credential authority is
   operator territory and not covered here.
-- Multi-signer credential setups. SAS supports multiple authorized
+- **Multi-signer credential setups.** SAS supports multiple authorized
   signers per credential (Cortex uses this pattern for KMS-backed signing).
   The notary CLI reference deployment uses a single signer; operators who
   need multi-signer can extend without spec changes.

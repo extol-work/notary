@@ -4,3 +4,20 @@ Cargo.lock
 *.swp
 .idea/
 .vscode/
+
+# Never commit signing key material. This ignore is intentionally aggressive:
+# keyfiles at any path, in any subdirectory, are ignored by default. To include
+# a fixture keyfile in the repo (e.g. test vectors), it must be explicitly
+# force-added AND live under fixtures/ or vectors/.
+*.key
+!fixtures/**/*.key
+!vectors/**/*.key
+
+# Attestation files and payloads produced by smoke tests at the repo root.
+# These are the shapes that leaked in the first accidental commit. Ignored
+# at the repo root only; test fixtures under fixtures/ or vectors/ are
+# intentional and tracked.
+/attestation.json
+/hello.json
+/*.attestation.json
+/*.payload.json

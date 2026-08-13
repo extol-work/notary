@@ -70,6 +70,7 @@ struct KeygenArgs {
 }
 
 #[derive(clap::Args)]
+#[command(group(clap::ArgGroup::new("subject_form").required(true).args(["subject", "subject_base58"])))]
 struct SignArgs {
     /// Path to the signing keyfile.
     #[arg(long, short = 'k')]
@@ -80,8 +81,18 @@ struct SignArgs {
     /// Interpretation is defined by the activity type's schema (§2.6):
     /// another signer's pubkey, a content hash, or an equivalent 32-byte
     /// identifier. Sign the signer's own pubkey when signer == subject.
+    ///
+    /// Mutually exclusive with --subject-base58. Exactly one is required.
     #[arg(long)]
-    subject: String,
+    subject: Option<String>,
+
+    /// Subject identifier as a Solana-style base58 pubkey (typically 43-44 chars,
+    /// decoding to exactly 32 bytes). Convenience for pasting validator IDs and
+    /// other Solana keys without hex-decoding first.
+    ///
+    /// Mutually exclusive with --subject. Exactly one is required.
+    #[arg(long = "subject-base58")]
+    subject_base58: Option<String>,
 
     /// Activity type as an absolute URI (SPEC §2.2).
     #[arg(long = "activity-type")]
@@ -169,6 +180,35 @@ fn cmd_keygen(args: KeygenArgs) -> anyhow::Result<()> {
 
 // ─── sign ───────────────────────────────────────────────────────────
 
+/// Decode the subject from whichever form the caller supplied. The clap
+/// ArgGroup on SignArgs guarantees exactly one is Some; this function is
+/// defensive against future refactors and returns a clear error if that
+/// invariant were ever violated.
+fn decode_subject(
+    subject_hex: &Option<String>,
+    subject_base58: &Option<String>,
+) -> anyhow::Result<[u8; 32]> {
+    match (subject_hex, subject_base58) {
+        (Some(h), None) => hex32(h, "subject"),
+        (None, Some(b)) => {
+            let bytes = bs58::decode(b)
+                .into_vec()
+                .with_context(|| format!("subject-base58 is not valid base58: {}", b))?;
+            let len = bytes.len();
+            let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+                anyhow::anyhow!(
+                    "subject-base58 decoded to {} bytes, expected 32 (Solana pubkeys are 32 bytes)",
+                    len
+                )
+            })?;
+            Ok(arr)
+        }
+        _ => anyhow::bail!(
+            "internal error: exactly one of --subject or --subject-base58 must be set (clap ArgGroup should enforce this)"
+        ),
+    }
+}
+
 fn cmd_sign(args: SignArgs) -> anyhow::Result<()> {
     // Load key first — cheap and fails fast on bad keyfile.
     let signing_key = Keyfile::load(&args.key)?;
@@ -181,7 +221,7 @@ fn cmd_sign(args: SignArgs) -> anyhow::Result<()> {
         .with_context(|| format!("parse payload {} as JSON", args.payload.display()))?;
     let data_hash_bytes = data_hash(&payload)?;
 
-    let subject_bytes = hex32(&args.subject, "subject")?;
+    let subject_bytes = decode_subject(&args.subject, &args.subject_base58)?;
     let witness_for_bytes = hex32(&args.witness_for, "witness_for")?;
     let source_hash_bytes = hex32(&args.source_hash, "source_hash")?;
 

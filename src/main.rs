@@ -10,6 +10,7 @@
 mod attestation;
 mod canonical;
 mod keyfile;
+mod vectors;
 
 use anyhow::Context;
 use attestation::{hex32, hex64, Attestation};
@@ -58,8 +59,40 @@ enum Command {
     Reanchor,
     /// Issue or redeem a Layer 5 disclosure token. (Not yet implemented.)
     Disclose,
-    /// Emit or verify golden vectors against the specification. (Not yet implemented.)
-    Vectors,
+    /// Emit or verify golden vectors against the specification.
+    Vectors(VectorsArgs),
+}
+
+#[derive(clap::Args)]
+struct VectorsArgs {
+    #[command(subcommand)]
+    action: VectorsAction,
+}
+
+#[derive(Subcommand)]
+enum VectorsAction {
+    /// Regenerate the deterministic v0.2 vector file from baked test cases.
+    ///
+    /// Use when the spec byte layout changes (e.g., a spec_version bump).
+    /// The output is the source of truth for cross-implementation conformance.
+    Emit {
+        /// Path to write the vectors.json file. Overwrites if exists.
+        #[arg(long, short = 'o')]
+        out: PathBuf,
+    },
+    /// Verify a vectors.json file byte-for-byte.
+    ///
+    /// Each vector is checked for three properties:
+    ///   1. Reconstructed canonical bytes == expected_canonical_bytes_hex
+    ///   2. Ed25519 signature over reconstructed bytes == expected_signature_hex
+    ///   3. Signature verifies against reconstructed bytes (sanity)
+    ///
+    /// Exits 0 if all vectors pass all three checks. Exits 1 with per-vector
+    /// diagnostics otherwise.
+    Verify {
+        /// Path to a vectors.json file (see fixtures/v0.2/vectors.json).
+        path: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -148,11 +181,11 @@ fn main() -> anyhow::Result<()> {
         Command::Keygen(args) => cmd_keygen(args),
         Command::Sign(args) => cmd_sign(args),
         Command::Verify(args) => cmd_verify(args),
+        Command::Vectors(args) => cmd_vectors(args),
         Command::Anchor
         | Command::Check
         | Command::Reanchor
-        | Command::Disclose
-        | Command::Vectors => {
+        | Command::Disclose => {
             anyhow::bail!(
                 "not yet implemented in this build. See README.md for the ship sequence."
             );
@@ -376,4 +409,59 @@ fn cmd_verify(args: VerifyArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// ─── vectors ────────────────────────────────────────────────────────
+
+fn cmd_vectors(args: VectorsArgs) -> anyhow::Result<()> {
+    match args.action {
+        VectorsAction::Emit { out } => {
+            let file = vectors::emit_vectors()
+                .context("emit vectors from baked test cases")?;
+            vectors::write_vectors(&file, &out)?;
+            println!("wrote {} vectors: {}", file.vectors.len(), out.display());
+            println!("spec_version:    {} ({})", file.spec_version, file.spec_version_name);
+            println!("canonical bytes: {}", file.canonical_bytes_length);
+            for v in &file.vectors {
+                println!("  - {} (signer {}…, sig {}…)",
+                    v.name,
+                    &v.input_fields.signer_hex[..8],
+                    &v.expected_signature_hex[..8]);
+            }
+            Ok(())
+        }
+        VectorsAction::Verify { path } => {
+            let (file, reports) = vectors::verify_vectors(&path)?;
+            println!("vector file:     {}", path.display());
+            println!("spec_version:    {} ({})", file.spec_version, file.spec_version_name);
+            println!("vectors:         {}", reports.len());
+            println!();
+
+            let mut failed = 0u32;
+            for r in &reports {
+                if r.passed() {
+                    println!("  ✓ {}", r.name);
+                } else {
+                    failed += 1;
+                    println!("  ✗ {}", r.name);
+                    println!("      canonical_bytes: {}", if r.canonical_bytes_ok { "OK" } else { "FAIL" });
+                    println!("      signature:       {}", if r.signature_ok { "OK" } else { "FAIL" });
+                    println!("      verify:          {}", if r.verify_ok { "OK" } else { "FAIL" });
+                    for e in &r.errors {
+                        println!("      • {}", e);
+                    }
+                }
+            }
+            println!();
+            if failed == 0 {
+                println!("PASS: {} / {} vectors conform to SPEC §3.1 and §3.2", reports.len(), reports.len());
+                Ok(())
+            } else {
+                anyhow::bail!(
+                    "FAIL: {} / {} vectors did not conform. See per-vector diagnostics above.",
+                    failed, reports.len()
+                );
+            }
+        }
+    }
 }

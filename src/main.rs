@@ -11,6 +11,7 @@ mod anchor;
 mod attestation;
 mod canonical;
 mod devnet;
+mod disclose;
 mod keyfile;
 mod provision;
 mod sas;
@@ -61,8 +62,8 @@ enum Command {
     Check(CheckArgs),
     /// Re-anchor an attestation to an additional cluster without re-signing.
     Reanchor(ReanchorArgs),
-    /// Issue or redeem a Layer 5 disclosure token. (Not yet implemented.)
-    Disclose,
+    /// Issue or redeem a Layer 5 disclosure token per SPEC §6.3.
+    Disclose(DiscloseArgs),
     /// Emit or verify golden vectors against the specification.
     Vectors(VectorsArgs),
 
@@ -127,6 +128,72 @@ struct ReanchorArgs {
     /// Override the schema PDA for the new cluster.
     #[arg(long)]
     schema: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct DiscloseArgs {
+    #[command(subcommand)]
+    action: DiscloseAction,
+}
+
+#[derive(Subcommand)]
+enum DiscloseAction {
+    /// Mint a single-use disclosure token authorizing payload retrieval.
+    ///
+    /// The token is signed by the attestation's signing key (SPEC §6.3
+    /// signer-authorized). The keyfile you pass MUST match the attestation's
+    /// signer field; a mismatch is caught before any file is written.
+    Issue {
+        /// Path to the attestation JSON to authorize.
+        #[arg(long, short = 'a')]
+        attestation: PathBuf,
+
+        /// Signing key that produced the attestation.
+        #[arg(long, short = 'k')]
+        key: PathBuf,
+
+        /// Token lifetime in seconds. SPEC §6.3 recommends 60..=604800 for
+        /// single-use tokens. Default: 3600 (one hour).
+        #[arg(long, default_value_t = 3600)]
+        lifetime_secs: i64,
+
+        /// Explicitly designate this token as multi-use per SPEC §6.3. If
+        /// unset, the token is single-use.
+        #[arg(long)]
+        multi_use: bool,
+
+        /// Bypass the 7-day ceiling for single-use tokens. Refused unless
+        /// the caller passes this flag with intent.
+        #[arg(long)]
+        allow_long_lifetime: bool,
+
+        /// Path to write the disclosure token JSON.
+        #[arg(long, short = 'o')]
+        out: PathBuf,
+    },
+
+    /// Verify a disclosure token and (if all checks pass) print the payload.
+    ///
+    /// Consumes the token via the single-use ledger for single-use tokens.
+    /// Multi-use tokens are not tracked.
+    Redeem {
+        /// Path to the attestation JSON that contains the payload.
+        #[arg(long, short = 'a')]
+        attestation: PathBuf,
+
+        /// Path to the disclosure token JSON.
+        #[arg(long, short = 't')]
+        token: PathBuf,
+
+        /// Ledger path for single-use enforcement. Default:
+        /// `~/.notary/consumed-tokens.json`.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Write the payload here rather than stdout.
+        #[arg(long, short = 'o')]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -306,11 +373,7 @@ fn main() -> anyhow::Result<()> {
         Command::Anchor(args) => cmd_anchor(args),
         Command::Check(args) => cmd_check(args),
         Command::Reanchor(args) => cmd_reanchor(args),
-        Command::Disclose => {
-            anyhow::bail!(
-                "not yet implemented in this build. See README.md for the ship sequence."
-            );
-        }
+        Command::Disclose(args) => cmd_disclose(args),
     }
 }
 
@@ -970,4 +1033,163 @@ fn parse_optional_pubkey(
                 .with_context(|| format!("parse {label} as base58 pubkey"))?,
         )),
     }
+}
+
+// ─── disclose (Layer 5) ────────────────────────────────────────────
+
+fn cmd_disclose(args: DiscloseArgs) -> anyhow::Result<()> {
+    match args.action {
+        DiscloseAction::Issue {
+            attestation,
+            key,
+            lifetime_secs,
+            multi_use,
+            allow_long_lifetime,
+            out,
+        } => cmd_disclose_issue(
+            attestation,
+            key,
+            lifetime_secs,
+            !multi_use,
+            allow_long_lifetime,
+            out,
+        ),
+        DiscloseAction::Redeem {
+            attestation,
+            token,
+            ledger,
+            out,
+        } => cmd_disclose_redeem(attestation, token, ledger, out),
+    }
+}
+
+fn cmd_disclose_issue(
+    attestation_path: PathBuf,
+    key_path: PathBuf,
+    lifetime_secs: i64,
+    single_use: bool,
+    allow_long_lifetime: bool,
+    out: PathBuf,
+) -> anyhow::Result<()> {
+    if out.exists() {
+        anyhow::bail!(
+            "refusing to overwrite existing token at {}. \
+             Delete or move it explicitly if you intend to replace it.",
+            out.display()
+        );
+    }
+
+    let signing_key = Keyfile::load(&key_path)?;
+
+    let att_bytes = fs::read(&attestation_path)
+        .with_context(|| format!("read attestation {}", attestation_path.display()))?;
+    let att: Attestation = serde_json::from_slice(&att_bytes)
+        .with_context(|| format!("parse attestation {} as JSON", attestation_path.display()))?;
+    att.validate_shape()?;
+
+    let token = disclose::issue(&att, &signing_key, lifetime_secs, single_use, allow_long_lifetime)?;
+    let json = serde_json::to_string_pretty(&token)?;
+    fs::write(&out, json.as_bytes())
+        .with_context(|| format!("write token {}", out.display()))?;
+
+    println!("wrote disclosure token: {}", out.display());
+    println!("token_id:               {}", token.token_id);
+    println!("covers attestation:     {}", token.attestation_hash);
+    println!("expires_at:             {} (Unix seconds)", token.expires_at);
+    println!(
+        "kind:                   {}",
+        if token.single_use { "single-use" } else { "multi-use" }
+    );
+    println!();
+    if token.single_use {
+        println!("Single-use per SPEC §6.3: this token can be redeemed exactly once.");
+        println!("Consumption is tracked in the ledger (~/.notary/consumed-tokens.json by default).");
+    } else {
+        println!("⚠ Multi-use token per SPEC §6.3. The single-use property is EXPLICITLY WAIVED.");
+        println!("  Any holder can redeem repeatedly until expiration.");
+    }
+    Ok(())
+}
+
+fn cmd_disclose_redeem(
+    attestation_path: PathBuf,
+    token_path: PathBuf,
+    ledger_path: Option<PathBuf>,
+    out: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let att_bytes = fs::read(&attestation_path)
+        .with_context(|| format!("read attestation {}", attestation_path.display()))?;
+    let att: Attestation = serde_json::from_slice(&att_bytes)
+        .with_context(|| format!("parse attestation {} as JSON", attestation_path.display()))?;
+    att.validate_shape()?;
+
+    let token_bytes = fs::read(&token_path)
+        .with_context(|| format!("read token {}", token_path.display()))?;
+    let token: disclose::DisclosureToken = serde_json::from_slice(&token_bytes)
+        .with_context(|| format!("parse token {} as JSON", token_path.display()))?;
+
+    let ledger = match ledger_path {
+        Some(p) => p,
+        None => disclose::default_ledger_path()?,
+    };
+
+    // Single-use gate BEFORE signature verification. This is important: a
+    // second redemption of a consumed token surfaces as AlreadyConsumed rather
+    // than passing signature verification and then failing at consume time.
+    // The distinct error class is what SPEC §6.3 requires.
+    if token.single_use && disclose::is_consumed(&ledger, &token.token_id)? {
+        anyhow::bail!(
+            "SPEC §6.3: single-use token {}… has already been redeemed. \
+             Consumption recorded at {}. Issue a fresh token; single-use is a hard property.",
+            token.token_id.chars().take(16).collect::<String>(),
+            ledger.display()
+        );
+    }
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before 1970")
+        .as_secs() as i64;
+
+    let payload = match disclose::verify_token(&att, &token, now_secs) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("REDEEM FAILED ({}): {}", e.class(), e);
+            anyhow::bail!("token verification failed");
+        }
+    };
+
+    // Record consumption AFTER successful verification. For single-use tokens
+    // this makes the redemption stick. Multi-use tokens are a no-op here.
+    disclose::consume_token_in_ledger(&ledger, &token, now_secs)?;
+
+    // Write payload to stdout or file. Serialize with the same key ordering
+    // discipline as sign uses (preserve_order), so a caller comparing bytes
+    // sees a stable form.
+    let payload_bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|e| anyhow::anyhow!("serialize payload for output: {e}"))?;
+    match out {
+        Some(path) => {
+            fs::write(&path, &payload_bytes)
+                .with_context(|| format!("write payload {}", path.display()))?;
+            println!("token_id:              {}", token.token_id);
+            println!("covers attestation:    {}", token.attestation_hash);
+            println!("kind:                  {}", if token.single_use { "single-use (consumed)" } else { "multi-use" });
+            println!("payload_hash:          MATCHES data_hash");
+            println!("wrote payload:         {}", path.display());
+        }
+        None => {
+            eprintln!("token_id:              {}", token.token_id);
+            eprintln!("covers attestation:    {}", token.attestation_hash);
+            eprintln!("kind:                  {}", if token.single_use { "single-use (consumed)" } else { "multi-use" });
+            eprintln!("payload_hash:          MATCHES data_hash");
+            eprintln!("--- payload ---");
+            use std::io::Write;
+            std::io::stdout()
+                .write_all(&payload_bytes)
+                .context("write payload to stdout")?;
+            println!();
+        }
+    }
+    Ok(())
 }

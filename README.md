@@ -35,9 +35,63 @@ cargo install --path .
 
 Prebuilt binaries and a `cargo install` shortcut against crates.io ship with the first stable release.
 
-## Usage
+## Try it
 
-Not yet available. This scaffolding commit reserves the repository and locks in the naming; the operational commands ship in the next work session.
+The full spec is exercisable from the CLI. Layers 1, 2, and 5 run offline; Layer 4 anchoring needs a funded Solana devnet keypair. The commands below assume you have `attest` on your path after `cargo install --path .`.
+
+### Offline (Layers 1, 2, 5)
+
+    # 1. Generate a signing keypair. The command prints the public key in hex;
+    #    copy it for --subject in step 3.
+    attest keygen --out author.key
+
+    # 2. Draft a payload. Any JSON that RFC 8785 can canonicalize.
+    echo '{"note":"first attestation"}' > payload.json
+
+    # 3. Sign. This example self-attests, so signer and subject are the same key.
+    #    Use --subject-base58 instead if the subject is a Solana-style pubkey.
+    attest sign --key author.key \
+      --subject <hex-pubkey-from-keygen> \
+      --activity-type "https://schemas.example.org/self-report/v1" \
+      --payload payload.json \
+      --out attestation.json
+
+    # 4. Verify offline. Reconstructs canonical bytes, checks the Ed25519
+    #    signature, and confirms SHA-256(payload) == data_hash.
+    attest verify attestation.json
+
+    # 5. Issue a single-use disclosure token, then redeem it once.
+    attest disclose issue --attestation attestation.json --key author.key --out token.json
+    attest disclose redeem --token token.json --attestation attestation.json
+
+    # 6. A second redeem is refused per SPEC §6.3 single-use exhaustion.
+    attest disclose redeem --token token.json --attestation attestation.json
+
+Every check has a distinct error class. A tampered payload is rejected as `tampered_payload`. An expired token is rejected as `expired`. A second redeem is rejected as `already_consumed`. Consult SPEC §6.3 for the full list.
+
+### On devnet (Layer 4)
+
+Anchoring requires a Solana devnet keypair authorized against a provisioned SAS credential and schema. See [docs/devnet-setup.md](./docs/devnet-setup.md) for the one-time operator provisioning.
+
+Once your credential and schema exist:
+
+    attest anchor --attestation attestation.json \
+      --credential <your-credential> --schema <your-schema> \
+      --fee-payer keys/devnet-fee-payer.json
+
+    attest check attestation.json
+
+Re-anchoring to a different cluster preserves the original signature and appends a new anchor record without touching the first:
+
+    attest reanchor --attestation attestation.json --to mainnet-beta \
+      --credential <mainnet-credential> --schema <mainnet-schema> \
+      --fee-payer keys/mainnet-fee-payer.json
+
+### Conformance
+
+The CLI ships golden vectors under `fixtures/v0.2/vectors.json`. Any conforming implementation MUST reproduce these vectors byte-for-byte:
+
+    attest vectors verify fixtures/v0.2/vectors.json
 
 See [SPEC.md](https://github.com/extol-work/sworn/blob/main/SPEC.md) for what the CLI is implementing against, and [bindings/sas.md](https://github.com/extol-work/sworn/blob/main/bindings/sas.md) for the Solana binding this CLI targets.
 

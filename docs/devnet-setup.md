@@ -192,6 +192,56 @@ attestation. Meaningful only once mainnet is available; the notary CLI
 treats `mainnet-beta` as unprovisioned until an operator has walked
 through this same sequence against it.
 
+## 9. Extra credit: inspect the on-chain state directly
+
+`attest check` prints PASS or FAIL. But the whole point of a substrate
+anchor is that it is independently verifiable: you should not need to
+trust the notary CLI to see what actually lives on-chain.
+
+The repo ships a small Python script that fetches the SAS attestation
+account via `getAccountInfo` and decodes every field per the on-chain
+layout. Stdlib only, no `pip install` required. Copy the attestation PDA
+from the earlier `attest anchor` output and run:
+
+    python3 scripts/decode-attestation.py <YOUR_ATTESTATION_PDA>
+
+Expected output (your addresses and hash will differ):
+
+    pda:                <YOUR_PDA>
+    owner:              22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG
+    lamports:           2415120
+    data size:          219 bytes
+
+    discriminator:      2
+    nonce (base58):     <your 32-byte hash as base58>
+    nonce (hex):        <same, in hex>
+    credential:         <your credential PDA>
+    schema:             <your schema PDA>
+    data_len prefix:    46 (v0.2 receipt)
+
+    spec_version:       3
+    attestation_hash:   <your 32-byte hash in hex>
+    signer_asserted_at: <Unix seconds>
+
+    signer:             <your fee-payer pubkey>
+    expiry:             0 (never)
+    token_account:      11111111111111111111111111111111
+
+    nonce == attestation_hash?  True
+
+The interesting fact: `nonce == attestation_hash`. Both are the same
+32 bytes: `SHA-256` of the 248-byte canonical sequence. The nonce lives
+in the PDA seed, and the same hash appears again inside the 46-byte
+receipt data. The duplication is deliberate: the PDA seed is opaque
+with respect to signer, subject, activity_type, and payload contents,
+which is what enforces SPEC §5.1 non-walkability. A
+`getProgramAccounts` scan by
+`["attestation", credential, schema, *]` returns a list of opaque
+hashes, not a walkable directory of who signed what about whom.
+
+You did not need `attest` to see any of this. That is the auditable
+substrate property, made concrete.
+
 ---
 
 ## Troubleshooting

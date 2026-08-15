@@ -1,0 +1,10 @@
+[toolchain]
+# Pinned to a modern-but-broadly-installed stable to avoid the cargo `dep:`
+# syntax handling drift that older toolchains (pre-1.83) hit when resolving
+# solana-sdk's optional dependencies. Any 1.83+ works; pinning to 1.85 keeps
+# the build reproducible across contributors' machines regardless of what
+# they have as global default. Rustup transparently downloads this on first
+# `cargo install`; no user action needed.
+channel = "1.85.0"
+components = ["cargo", "rustc"]
+profile = "minimal"

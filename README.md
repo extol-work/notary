@@ -27,11 +27,22 @@ Each command corresponds to a concrete layer of the specification. The CLI is in
 
 ## Install
 
-Cargo:
+Cargo, from a git clone:
 
 ```
-cargo install --path .
+git clone https://github.com/extol-work/notary && cd notary
+cargo install --path . --locked
 ```
+
+Or directly from GitHub:
+
+```
+cargo install --git https://github.com/extol-work/notary --locked
+```
+
+The `--locked` flag is important: it tells cargo to use the exact dependency versions in `Cargo.lock` rather than re-resolving. Without it, cargo picks the newest compatible versions each time, which occasionally lands on broken combinations in the Solana SDK dependency tree.
+
+The repo pins its Rust toolchain to 1.85.0 via `rust-toolchain.toml`. If rustup is installed, it will transparently download that toolchain on first invocation. No global toolchain change is needed. Rust older than 1.83 will fail on the `dep:` syntax that solana-sdk 2.3.1 uses.
 
 Prebuilt binaries and a `cargo install` shortcut against crates.io ship with the first stable release.
 

@@ -129,7 +129,7 @@ Expected output includes an `attestation PDA:` line, a `tx:` line, an
 `wrote anchor file: attestation.anchor-devnet.json` line.
 
 The anchor record lives in a **new sibling file** next to your
-attestation, named `<stem>.anchor-<cluster>.json`. The `attestation.json`
+attestation, named `attestation.anchor-<cluster>.json`. The `attestation.json`
 itself is never modified after `attest sign`: it is a signed artifact,
 and signed artifacts stay immutable. Anchoring to a second cluster later
 would write a second sibling file (`attestation.anchor-mainnet-beta.json`)

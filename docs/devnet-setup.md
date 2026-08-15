@@ -145,8 +145,24 @@ Read the on-chain state back and confirm it matches your local files:
 against the substrate. Expected: `status: MATCHES local record` and
 `PASS: 1/1 anchor(s) match the local record`.
 
-For the "did they send me what they said and is it real?" question in
-one command, use `confirm` (runs verify + check with a unified verdict):
+### When to reach for `check` vs `verify` vs `confirm`
+
+Three separate commands, three separate questions:
+
+- **`attest verify attestation.json`** offline. "Is the signature
+  valid and does the payload I hold match the `data_hash` that got
+  signed?" Catches payload tampering. Does not touch the network.
+- **`attest check attestation.json`** online, Layer 4. "Was this
+  attestation's hash durably notarized on the substrate?" Catches
+  missing or mismatched anchors. Does not touch the payload.
+- **`attest confirm attestation.json`** runs both with a unified
+  verdict. "Did they send me what they said and is it real?"
+
+The split matters because the on-chain anchor commits only to the hash
+of the canonical bytes, not to the payload. A tampered payload will
+still `check` cleanly (the on-chain hash is unchanged) but will fail
+`verify` (the recomputed payload hash no longer matches `data_hash`).
+Bundle recipients should default to `confirm`.
 
     attest confirm attestation.json
 

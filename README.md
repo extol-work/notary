@@ -16,11 +16,11 @@ A single-binary Rust CLI that lets you:
 
 - Generate an Ed25519 keypair (`attest keygen`)
 - Sign a factual claim as an Attestation Notary conforming attestation (`attest sign`)
-- Verify a signed attestation off-chain (`attest verify`)
-- Anchor an attestation to Solana Attestation Service on devnet (`attest anchor`)
-- Confirm an anchor is present on the substrate (`attest check`)
-- Re-anchor an attestation to a different cluster without re-signing (`attest reanchor`)
-- Issue and redeem single-use disclosure tokens per SPEC §6.3 (`attest disclose`)
+- Verify a signed attestation off-chain: signature valid, payload matches `data_hash` (`attest verify`)
+- Anchor an attestation to Solana Attestation Service on devnet (`attest anchor`). Anchoring the same attestation to a second cluster is the same command with a different `--cluster`; each anchor lives in its own sibling file so the signed attestation itself stays immutable.
+- Confirm on-chain anchor(s) match the local record (`attest check`)
+- Run verify + check together with a unified verdict (`attest confirm`) the "did they send me what they said and is it real?" command for a bundle from a third party
+- Issue and redeem disclosure tokens per SPEC §6.3, single-use by default with `--multi-use` opt-in (`attest disclose`)
 - Round-trip against the specification's golden vectors (`attest vectors`)
 
 Each command corresponds to a concrete layer of the specification. The CLI is intentionally the smallest surface that exercises Layers 1 through 5 end-to-end.
@@ -42,7 +42,7 @@ cargo install --git https://github.com/extol-work/notary --locked
 
 The `--locked` flag is important: it tells cargo to use the exact dependency versions in `Cargo.lock` rather than re-resolving. Without it, cargo picks the newest compatible versions each time, which occasionally lands on broken combinations in the Solana SDK dependency tree.
 
-The repo pins its Rust toolchain to 1.85.0 via `rust-toolchain.toml`. If rustup is installed, it will transparently download that toolchain on first invocation. No global toolchain change is needed. Rust older than 1.83 will fail on the `dep:` syntax that solana-sdk 2.3.1 uses.
+The repo pins its Rust toolchain to 1.88.0 via `rust-toolchain.toml`. If rustup is installed, it will transparently download that toolchain on first invocation. No global toolchain change is needed. Rust older than 1.88 will fail on transitive dependencies (`serde_with_macros`, `time`) that require modern rustc.
 
 Prebuilt binaries and a `cargo install` shortcut against crates.io ship with the first stable release.
 

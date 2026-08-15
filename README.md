@@ -86,7 +86,7 @@ Anchoring requires a Solana devnet keypair authorized against a provisioned SAS 
 
 Once your credential and schema exist:
 
-    attest anchor --attestation attestation.json \
+    attest anchor attestation.json \
       --credential <your-credential> --schema <your-schema> \
       --fee-payer keys/devnet-fee-payer.json
 
@@ -94,7 +94,7 @@ Once your credential and schema exist:
 
 Re-anchoring to a different cluster preserves the original signature and appends a new anchor record without touching the first:
 
-    attest reanchor --attestation attestation.json --to mainnet-beta \
+    attest reanchor attestation.json --to mainnet-beta \
       --credential <mainnet-credential> --schema <mainnet-schema> \
       --fee-payer keys/mainnet-fee-payer.json
 

@@ -1,0 +1,11 @@
+# Map commit author identities to GitHub-verified addresses.
+#
+# The repo's commits were authored under "Charon <charon@extol.work>",
+# which is not a GitHub-verified email on any account. This mailmap
+# tells `git shortlog`, `git blame`, and GitHub's Contributors graph
+# to attribute those commits to Otto (@autocatalytic) via a verified
+# email on that account.
+#
+# Format: <preferred-name> <preferred-email> <commit-name> <commit-email>
+
+Otto <ken@extol.work> Charon <charon@extol.work>

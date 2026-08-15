@@ -114,6 +114,11 @@ The CLI does not currently read these env vars; substitute them into
 command arguments. Env var integration is a small future ergonomics
 improvement.
 
+**Setup complete.** You can return to the main README's "On devnet"
+section for a compact anchor + check + confirm sequence, or continue
+below for a more detailed walkthrough of the Layer 4 test with
+per-command explanations.
+
 ## 6. Anchor a test attestation
 
 Sign an attestation offline first (see the "Offline" section of the main
@@ -129,7 +134,8 @@ Expected output includes an `attestation PDA:` line, a `tx:` line, an
 `wrote anchor file: attestation.anchor-devnet.json` line.
 
 The anchor record lives in a **new sibling file** next to your
-attestation, named `attestation.anchor-<cluster>.json`. The `attestation.json`
+attestation. For an input named `attestation.json` anchored to devnet,
+that file is `attestation.anchor-devnet.json`. The `attestation.json`
 itself is never modified after `attest sign`: it is a signed artifact,
 and signed artifacts stay immutable. Anchoring to a second cluster later
 would write a second sibling file (`attestation.anchor-mainnet-beta.json`)
@@ -141,9 +147,10 @@ Read the on-chain state back and confirm it matches your local files:
 
     attest check attestation.json
 
-`check` discovers every `<stem>.anchor-*.json` sibling and checks each
-against the substrate. Expected: `status: MATCHES local record` and
-`PASS: 1/1 anchor(s) match the local record`.
+`check` discovers every sibling anchor file next to the attestation
+(e.g., `attestation.anchor-devnet.json`) and checks each against the
+substrate. Expected: `status: MATCHES local record` and `PASS: 1/1
+anchor(s) match the local record`.
 
 ### When to reach for `check` vs `verify` vs `confirm`
 
@@ -172,14 +179,18 @@ Nothing to clean up. The credential and schema you created stay on devnet
 indefinitely and serve every future anchor operation under this
 fee-payer.
 
-Try the Layer 5 disclosure token flow from the main README's "Offline"
-section (works against the same attestation you just anchored), or
-anchor the same attestation to a second cluster (only meaningful once
-mainnet is available; the notary CLI treats mainnet-beta as
-unprovisioned until an operator has walked through this same sequence
-against it) with `attest anchor <att.json> --cluster mainnet-beta ...`.
-The resulting sibling file coexists with the devnet one; both anchors
-notarize the same signed attestation.
+With `attest confirm` passing above, you have exercised the full
+Attestation Notary stack: Layer 1+2 (offline sign + verify, covered in
+the main README's "Offline" section), Layer 4 (on-chain notarization
+via `anchor` + `check`), and Layer 5 (disclosure tokens, also covered
+in the main README). This is what the specification defines end-to-end.
+
+Anchoring the same attestation to a second cluster works with the same
+command and a different `--cluster`; the resulting sibling file coexists
+with the devnet one and both anchors notarize the same signed
+attestation. Meaningful only once mainnet is available; the notary CLI
+treats `mainnet-beta` as unprovisioned until an operator has walked
+through this same sequence against it.
 
 ---
 

@@ -56,19 +56,29 @@ enum Command {
     /// Verify a signed attestation off-chain.
     Verify(VerifyArgs),
 
-    /// Anchor an attestation to Solana Attestation Service (Layer 4). Writes
-    /// a sibling anchor file `<stem>.anchor-<cluster>.json`. Anchoring the
-    /// same attestation to a second cluster (e.g., devnet then mainnet-beta)
-    /// writes a second sibling file; the attestation itself is never mutated
-    /// after `attest sign`.
+    /// Anchor an attestation to Solana Attestation Service (Layer 4).
+    ///
+    /// Writes a sibling anchor file next to the attestation (e.g.,
+    /// `attestation.anchor-devnet.json` for an input named `attestation.json`
+    /// anchored to devnet). Anchoring the same attestation to a second
+    /// cluster writes a second sibling file (`attestation.anchor-mainnet-beta.json`);
+    /// the attestation itself is never mutated after `attest sign`.
     Anchor(AnchorArgs),
+
     /// Confirm the on-chain anchor(s) match the local attestation record.
-    /// Discovers all `<stem>.anchor-*.json` sibling files (plus legacy
-    /// embedded anchors from pre-refactor bundles) and checks each.
+    ///
+    /// Discovers every sibling anchor file next to the attestation (e.g.,
+    /// `attestation.anchor-devnet.json`, `attestation.anchor-mainnet-beta.json`)
+    /// and checks each against the substrate. Also reads legacy embedded
+    /// anchors from pre-refactor bundles.
     Check(CheckArgs),
-    /// Verify (Layer 1+2) and check (Layer 4) in one command with a unified
-    /// pass/fail verdict. Use when you have a bundle from a third party and
-    /// want to answer "is this what they say and is it real?" in one shot.
+
+    /// Verify (Layer 1+2) and check (Layer 4) with a unified pass/fail verdict.
+    ///
+    /// Use this when you have a bundle from a third party and want to
+    /// answer "is this what they say and is it real?" in one command.
+    /// Reach for `verify` or `check` individually as diagnostic tools if
+    /// confirm reports a failure at a specific layer.
     Confirm(ConfirmArgs),
     /// Issue or redeem a Layer 5 disclosure token per SPEC §6.3.
     Disclose(DiscloseArgs),
@@ -950,8 +960,10 @@ fn cmd_check(args: CheckArgs) -> anyhow::Result<()> {
     let discovered = anchor::discover_anchors(&args.attestation, &att)?;
     if discovered.is_empty() {
         anyhow::bail!(
-            "no anchors found for {}. Anchor files are named `<stem>.anchor-<cluster>.json` \
-             and must live next to the attestation. Run `attest anchor` first.",
+            "no anchors found for {}. Anchor files are named after the \
+             attestation with an `.anchor-<cluster>.json` suffix (e.g., \
+             `attestation.anchor-devnet.json`) and must live next to the \
+             attestation. Run `attest anchor` first.",
             args.attestation.display()
         );
     }

@@ -112,7 +112,7 @@ Anchoring the same attestation to a second cluster writes a second sibling file.
 
     # A subsequent `attest check attestation.json` now confirms both anchors.
 
-The two-file layout means a full bundle you can hand to a third party is: `attestation.json` (the signed artifact) plus zero or more `attestation.anchor-<cluster>.json` files (the notarization receipts). Pre-refactor bundles that embedded anchors inside `attestation.json` still verify and check without any migration; the CLI reads legacy embedded anchors as a fallback.
+The two-file layout means a full bundle you can hand to a third party is: `attestation.json` (the signed artifact) plus one anchor sibling file per cluster (e.g., `attestation.anchor-devnet.json`, `attestation.anchor-mainnet-beta.json`). Pre-refactor bundles that embedded anchors inside `attestation.json` still verify and check without any migration; the CLI reads legacy embedded anchors as a fallback.
 
 ### Conformance
 

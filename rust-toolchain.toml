@@ -1,10 +1,9 @@
 [toolchain]
-# Pinned to a modern-but-broadly-installed stable to avoid the cargo `dep:`
-# syntax handling drift that older toolchains (pre-1.83) hit when resolving
-# solana-sdk's optional dependencies. Any 1.83+ works; pinning to 1.85 keeps
-# the build reproducible across contributors' machines regardless of what
-# they have as global default. Rustup transparently downloads this on first
-# `cargo install`; no user action needed.
-channel = "1.85.0"
+# Pinned to a modern stable that satisfies the transitive dep tree.
+# Some Solana SDK dependencies (serde_with, time) now require rustc 1.88+;
+# 1.85 was too old. Bumping to 1.88 is the minimum floor as of Aug 2026.
+# Rustup transparently downloads this on first `cargo install`; no user
+# action needed regardless of what they have as global default.
+channel = "1.88.0"
 components = ["cargo", "rustc"]
 profile = "minimal"

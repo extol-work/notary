@@ -20,7 +20,7 @@
 //! An attestation may be anchored to any number of substrates over its
 //! lifetime. Each successful [`anchor`] call appends an [`AnchorRecord`] to
 //! the attestation's `anchors` field. Nothing is ever removed; the record is
-//! append-only. This matches ANS §5 semantics: notarization is a durable
+//! append-only. This matches §5 semantics: notarization is a durable
 //! commitment, not a revocable link.
 //!
 //! ## SAS attestation account layout
@@ -34,7 +34,7 @@
 //!   offset  33..65   credential pubkey        (32 bytes)
 //!   offset  65..97   schema pubkey            (32 bytes)
 //!   offset  97..101  data length prefix       (u32 LE, always 46 for v0.2)
-//!   offset 101..147  data section             (46 bytes, ANS v0.2 encoded)
+//!   offset 101..147  data section             (46 bytes, v0.2 receipt encoded)
 //!   offset 147..179  signer pubkey            (32 bytes = credential authority)
 //!   offset 179..187  expiry                   (i64 LE, 0 = never)
 //!   offset 187..219  token account            (32 bytes, zero for non-tokenized)
@@ -50,8 +50,8 @@ use crate::attestation::Attestation;
 use crate::devnet;
 use crate::provision;
 use crate::sas::{
-    self, discriminator, find_attestation_pda, ANS_V2_ATTESTATION_HASH_LEN,
-    ANS_V2_DATA_SECTION_WIRE_LEN, ANS_V2_SIGNER_ASSERTED_AT_LEN, ANS_V2_SPEC_VERSION_LEN,
+    self, discriminator, find_attestation_pda, NOTARY_V2_ATTESTATION_HASH_LEN,
+    NOTARY_V2_DATA_SECTION_WIRE_LEN, NOTARY_V2_SIGNER_ASSERTED_AT_LEN, NOTARY_V2_SPEC_VERSION_LEN,
     SAS_PROGRAM_ID,
 };
 use anyhow::Context;
@@ -252,9 +252,9 @@ pub fn anchor(
     //   - authorized_signer must be in the credential's authorized_signers list.
     //     For the reference deployment, that is the credential authority itself.
     //   - expiry must be > current unix time or exactly 0 (never expires).
-    //     We use 0 because notarization is durable per ANS §5.
+    //     We use 0 because notarization is durable per §5.
     let expiry_never: i64 = 0;
-    let data = provision::encode_ans_v2_data(
+    let data = provision::encode_notary_v2_data(
         att.spec_version,
         &attestation_hash,
         att.signer_asserted_at,
@@ -385,16 +385,16 @@ pub fn check(record: &AnchorRecord, expected: &Attestation) -> anyhow::Result<Ch
         ));
     }
 
-    // Confirm the on-chain data-length prefix matches the ANS v0.2 wire size.
+    // Confirm the on-chain data-length prefix matches the v0.2 receipt wire size.
     let data_len = u32::from_le_bytes(
         account.data[account_offset::DATA_LEN_PREFIX..account_offset::DATA_LEN_PREFIX + 4]
             .try_into()
             .expect("4-byte slice"),
     ) as usize;
-    if data_len != ANS_V2_DATA_SECTION_WIRE_LEN {
+    if data_len != NOTARY_V2_DATA_SECTION_WIRE_LEN {
         anyhow::bail!(
-            "SAS data section is {data_len} bytes; expected {} for ANS v0.2",
-            ANS_V2_DATA_SECTION_WIRE_LEN
+            "SAS data section is {data_len} bytes; expected {} for v0.2 receipt",
+            NOTARY_V2_DATA_SECTION_WIRE_LEN
         );
     }
 
@@ -402,7 +402,7 @@ pub fn check(record: &AnchorRecord, expected: &Attestation) -> anyhow::Result<Ch
     let data = &account.data[account_offset::DATA..account_offset::DATA + data_len];
     let on_chain_spec_version = u16::from_le_bytes(
         data[sas::attestation_data_offset::SPEC_VERSION
-            ..sas::attestation_data_offset::SPEC_VERSION + ANS_V2_SPEC_VERSION_LEN]
+            ..sas::attestation_data_offset::SPEC_VERSION + NOTARY_V2_SPEC_VERSION_LEN]
             .try_into()
             .expect("2-byte slice"),
     );
@@ -412,19 +412,19 @@ pub fn check(record: &AnchorRecord, expected: &Attestation) -> anyhow::Result<Ch
             .try_into()
             .expect("4-byte slice"),
     ) as usize;
-    if hash_len_prefix != ANS_V2_ATTESTATION_HASH_LEN {
+    if hash_len_prefix != NOTARY_V2_ATTESTATION_HASH_LEN {
         anyhow::bail!(
             "attestation_hash length prefix is {hash_len_prefix}; expected {}",
-            ANS_V2_ATTESTATION_HASH_LEN
+            NOTARY_V2_ATTESTATION_HASH_LEN
         );
     }
     let on_chain_attestation_hash: [u8; 32] = data[sas::attestation_data_offset::ATTESTATION_HASH
-        ..sas::attestation_data_offset::ATTESTATION_HASH + ANS_V2_ATTESTATION_HASH_LEN]
+        ..sas::attestation_data_offset::ATTESTATION_HASH + NOTARY_V2_ATTESTATION_HASH_LEN]
         .try_into()
         .expect("32-byte slice");
     let on_chain_signer_asserted_at = i64::from_le_bytes(
         data[sas::attestation_data_offset::SIGNER_ASSERTED_AT
-            ..sas::attestation_data_offset::SIGNER_ASSERTED_AT + ANS_V2_SIGNER_ASSERTED_AT_LEN]
+            ..sas::attestation_data_offset::SIGNER_ASSERTED_AT + NOTARY_V2_SIGNER_ASSERTED_AT_LEN]
             .try_into()
             .expect("8-byte slice"),
     );
@@ -588,7 +588,7 @@ mod tests {
         let schema = Pubkey::new_from_array([3u8; 32]);
         let pda = Pubkey::new_from_array([4u8; 32]);
         let nonce = [0xAAu8; 32];
-        let data = [0xBBu8; ANS_V2_DATA_SECTION_WIRE_LEN];
+        let data = [0xBBu8; NOTARY_V2_DATA_SECTION_WIRE_LEN];
 
         let ix = create_attestation_ix(&payer, &payer, &credential, &schema, &pda, &nonce, &data, 0);
 
@@ -596,11 +596,11 @@ mod tests {
         assert_eq!(&ix.data[1..33], &nonce, "nonce inline");
         assert_eq!(
             u32::from_le_bytes(ix.data[33..37].try_into().unwrap()) as usize,
-            ANS_V2_DATA_SECTION_WIRE_LEN,
+            NOTARY_V2_DATA_SECTION_WIRE_LEN,
             "data length prefix"
         );
-        assert_eq!(&ix.data[37..37 + ANS_V2_DATA_SECTION_WIRE_LEN], &data);
-        let expiry_off = 37 + ANS_V2_DATA_SECTION_WIRE_LEN;
+        assert_eq!(&ix.data[37..37 + NOTARY_V2_DATA_SECTION_WIRE_LEN], &data);
+        let expiry_off = 37 + NOTARY_V2_DATA_SECTION_WIRE_LEN;
         assert_eq!(&ix.data[expiry_off..expiry_off + 8], &0i64.to_le_bytes());
         assert_eq!(ix.accounts.len(), 6);
     }
@@ -613,7 +613,7 @@ mod tests {
         assert_eq!(account_offset::SCHEMA, 65);
         assert_eq!(account_offset::DATA_LEN_PREFIX, 97);
         assert_eq!(account_offset::DATA, 101);
-        assert_eq!(account_offset::DATA + ANS_V2_DATA_SECTION_WIRE_LEN, 147);
+        assert_eq!(account_offset::DATA + NOTARY_V2_DATA_SECTION_WIRE_LEN, 147);
         assert_eq!(account_offset::SIGNER, 147);
         assert_eq!(account_offset::EXPIRY, 179);
         assert_eq!(account_offset::TOKEN_ACCOUNT, 187);

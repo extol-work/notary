@@ -1,86 +1,189 @@
-# Devnet setup
+# Devnet walkthrough
 
-The notary CLI's Layer 4 (SAS notarization on Solana devnet) is provisioned.
-The reference deployment addresses below are baked into `src/sas.rs`
-(`devnet_reference` module) and are the defaults for `attest anchor`,
-`attest check`, and `attest reanchor` on devnet.
+Anchoring an attestation to Solana devnet requires one-time operator setup:
+a funded fee-payer keypair, an on-chain SAS credential naming that key as
+authority, and an on-chain SAS schema declaring the v0.2 receipt layout.
 
-## Reference deployment addresses (devnet)
+Once complete you have a working end-to-end devnet notarization pipeline
+under your own key. Total wall time: about 10 minutes including a faucet
+airdrop. Total devnet SOL: about 0.005 for provisioning, plus about 0.001
+per anchor thereafter.
 
-| Item | Address |
-|---|---|
-| SAS program | `22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG` |
-| Credential (`notary-cli-devnet`) | `2wp93cFgFeZANui2rbDbFFkCju1f8NaaBBa9uuXeKZQw` |
-| Schema (`ans-v2-notary` v1) | `Cnu2C6jK6GpUdjWXjacJqQyzYwzr3mXpRKSj7gmrn4wW` |
-| Fee-payer / credential authority | `ySRnUCkb6FFgz6NThWdJbRbQJJdwb2uo4QMvG5TbSez` |
+Every command below assumes you have `attest` on your path (see the
+repository README for install instructions).
 
-Provisioned 2026-08-13. Schema layout `[1, 13, 8]` (U16, VecU8, I64)
-corresponding to the ANS v0.2 receipt: `spec_version || attestation_hash ||
-signer_asserted_at`.
+---
 
-## Wire format note
+## 1. Generate a fee-payer keypair
 
-`bindings/sas.md §5` names the semantic payload as 42 bytes. On the actual
-SAS account, the data section is 46 bytes: a `VecU8` type carries a 4-byte
-little-endian length prefix, and SAS has no fixed-length byte array type
-suitable for the 32-byte hash. Layout:
+The fee-payer pays for on-chain rent and transaction fees. It is also the
+credential authority: only keys authorized under this credential can create
+attestations against it.
 
-```
-  offset  0.. 2   spec_version           (u16 LE)                = 2 bytes
-  offset  2.. 6   attestation_hash len   (u32 LE, always = 32)   = 4 bytes
-  offset  6..38   attestation_hash       (32 bytes)              = 32 bytes
-  offset 38..46   signer_asserted_at     (i64 LE)                = 8 bytes
-```
+    attest admin keygen-fee-payer --out keys/devnet-fee-payer.json
 
-The extra 4 bytes do not weaken the non-walkability property (the PDA seed
-is `SHA-256(canonical_bytes)`, opaque with respect to every field). It is a
-small correction that should land as a doc fix on `extol-work/sworn/bindings/sas.md`.
+Expected output:
 
-## Provisioning a fresh deployment
+    wrote devnet fee-payer keypair: keys/devnet-fee-payer.json
+    pubkey (base58):                <YOUR_FEE_PAYER_PUBKEY>
 
-An operator who wants their own credential (rather than using the reference
-deployment) runs:
+Copy the pubkey. You will fund it next and reference it in every
+subsequent command. The file is written with owner-read-only permissions;
+treat the private seed as sensitive even though this is devnet.
 
-```
-attest admin keygen-fee-payer               # generate keypair, print pubkey
-# operator funds the pubkey with ~1 devnet SOL via
-#   solana airdrop 1 <pubkey> --url devnet
-#   or https://faucet.solana.com
-attest admin balance                        # confirm funding landed
-attest admin provision-credential           # SAS instruction 0
-attest admin provision-schema               # SAS instruction 1
-```
+The default output path lives inside a `keys/` directory that is gitignored
+by default. If you prefer a different path, pass `--out` explicitly and
+make sure your `.gitignore` blocks it.
 
-All four subcommands accept `--fee-payer <path>` if the keypair is not at
-`keys/devnet-fee-payer.json`. `provision-credential` and `provision-schema`
-are idempotent: re-running them prints the existing address and exits
-success. Total provisioning cost is approximately 0.004 SOL.
+## 2. Fund the fee-payer
 
-## Overriding the reference deployment
+Any of the standard devnet airdrop sources works. One SOL is more than
+enough for provisioning plus hundreds of anchor operations.
 
-`attest anchor`, `attest check`, and `attest reanchor` (upcoming) accept
-`--credential <base58>` and `--schema <base58>` to target a non-reference
-deployment. With no flags, they use the addresses above.
+    # Via the solana CLI if you have it installed
+    solana airdrop 1 <YOUR_FEE_PAYER_PUBKEY> --url devnet
 
-## Fee-payer keypair storage
+    # Or paste the pubkey into https://faucet.solana.com (pick devnet)
 
-The keypair lives at `keys/devnet-fee-payer.json` in Solana's standard
-JSON-array format. Compatible with `solana-keygen`, `solana-cli`, and any
-wallet that reads Solana keypair files.
+Confirm the balance landed. The notary CLI can query it without needing
+the solana CLI:
 
-- Path is gitignored (`.gitignore` blocks `/keys/`).
-- File permissions are restricted to owner-read-only on creation.
-- The pubkey is safe to share; the seed inside must not leave the local
-  machine.
+    attest admin balance
 
-## Non-goals
+Expected output includes a nonzero `balance:` line. If it prints zero or
+returns an error, the airdrop has not yet finalized; wait a few seconds
+and retry.
 
-- **Mainnet setup.** Mainnet provisioning waits until Umbriel confirms the
-  essay-endorsement surface is going live in production (per the EXT-248
-  scope). Until then, mainnet is a note-only concern.
-- **Rotation.** Key rotation for the fee-payer or credential authority is
-  operator territory and not covered here.
-- **Multi-signer credential setups.** SAS supports multiple authorized
-  signers per credential (Cortex uses this pattern for KMS-backed signing).
-  The notary CLI reference deployment uses a single signer; operators who
-  need multi-signer can extend without spec changes.
+## 3. Provision your SAS credential
+
+The credential is a SAS-owned PDA that names your fee-payer as the sole
+authorized signer. One-time per environment; idempotent on re-run.
+
+    attest admin provision-credential
+
+Expected output ends with:
+
+    credential created.
+    tx:                    <TX_SIGNATURE>
+    SAS_CREDENTIAL:        <YOUR_CREDENTIAL_PDA>
+
+Copy `SAS_CREDENTIAL`. You will pass it to `attest anchor` as
+`--credential`.
+
+If the credential already exists (you have run this before), the command
+prints "credential already exists on devnet. Nothing to do." and exits
+without spending SOL. Safe to re-run whenever unsure.
+
+## 4. Provision your SAS schema
+
+The schema declares the receipt layout: `spec_version (u16 LE) ||
+attestation_hash (VecU8 of 32) || signer_asserted_at (i64 LE)`. On-chain
+size is 46 bytes.
+
+    attest admin provision-schema
+
+Expected output ends with:
+
+    schema created.
+    tx:                    <TX_SIGNATURE>
+    SAS_SCHEMA:            <YOUR_SCHEMA_PDA>
+
+Copy `SAS_SCHEMA`. You will pass it to `attest anchor` as `--schema`.
+
+Same idempotency: safe to re-run.
+
+## 5. Save your addresses
+
+Both PDAs are derived deterministically from your fee-payer authority, so
+you can always re-derive them by re-running provision steps. But it is
+easier to save them somewhere convenient than to re-derive every time. A
+minimal `.env`-style file in your workspace works:
+
+    # ~/.notary-devnet
+    FEE_PAYER=keys/devnet-fee-payer.json
+    SAS_CREDENTIAL=<YOUR_CREDENTIAL_PDA>
+    SAS_SCHEMA=<YOUR_SCHEMA_PDA>
+
+Or export them in your shell:
+
+    export FEE_PAYER=keys/devnet-fee-payer.json
+    export SAS_CREDENTIAL=<YOUR_CREDENTIAL_PDA>
+    export SAS_SCHEMA=<YOUR_SCHEMA_PDA>
+
+The CLI does not currently read these env vars; substitute them into
+command arguments. Env var integration is a small future ergonomics
+improvement.
+
+## 6. Anchor a test attestation
+
+Sign an attestation offline first (see the "Offline" section of the main
+README if you have not already), then anchor it:
+
+    attest anchor attestation.json \
+      --fee-payer $FEE_PAYER \
+      --credential $SAS_CREDENTIAL \
+      --schema $SAS_SCHEMA
+
+Expected output includes an `attestation PDA:` line, a `tx:` line, and an
+`anchored at:` line with a slot number and block time. The
+`attestation.json` file is updated in place with a new entry in its
+`anchors` array recording the on-chain state.
+
+## 7. Verify the anchor
+
+Read the on-chain state back and confirm it matches your local file:
+
+    attest check attestation.json
+
+Expected: `status: MATCHES local record` and `PASS: 1/1 anchor(s) match
+the local record`.
+
+## 8. Cleanup and next steps
+
+Nothing to clean up. The credential and schema you created stay on devnet
+indefinitely and serve every future anchor operation under this
+fee-payer.
+
+Try the Layer 5 disclosure token flow from the main README's "Offline"
+section (works against the same attestation you just anchored) or
+re-anchor to another cluster using `attest reanchor` (only meaningful
+once mainnet is available; the notary CLI treats mainnet-beta as
+unprovisioned until an operator has walked through this same sequence
+against it).
+
+---
+
+## Troubleshooting
+
+**"Invalid account owner" (custom program error 0x1):** you passed a
+plain wallet pubkey where the CLI expected a SAS-owned credential or
+schema PDA. Re-check `--credential` and `--schema`: they should be the
+PDA addresses printed by steps 3 and 4, not your fee-payer pubkey.
+
+**"custom program error 0x5":** unauthorized signer. Your fee-payer key
+is not in the credential's authorized_signers list. Most common cause:
+you ran `attest anchor` with a fee-payer path different from the one you
+used in step 3. Re-run with the fee-payer that provisioned the
+credential.
+
+**"zero balance" from `attest admin balance`:** the airdrop has not yet
+finalized. Wait a few seconds and retry. If it persists past a minute,
+the faucet may be rate-limited or your pubkey may be a typo.
+
+**Rustup downloads a fresh toolchain on first `cargo install`:** expected.
+The repo pins its rustc version via `rust-toolchain.toml` so builds are
+reproducible regardless of what you have as your global default. The
+one-time download is about 100 MB.
+
+## Operators of other deployments
+
+The steps above describe a single-operator single-signer setup. SAS
+supports multi-signer credentials (Cortex uses this for KMS-backed
+signing), differently-named credentials or schemas, and mainnet
+deployment. The CLI's `--credential`, `--schema`, and `--fee-payer`
+flags accept any operator-provided values; the provisioning subcommands
+create fresh PDAs under whatever fee-payer you point them at. Rotating
+authorized signers requires SAS `ChangeAuthorizedSigners` (instruction
+3), which the CLI does not currently wrap; the underlying tx can be
+constructed via any Solana client or is easy to add as a follow-on
+subcommand if needed.

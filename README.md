@@ -82,21 +82,23 @@ Every check has a distinct error class. A tampered payload is rejected as `tampe
 
 ### On devnet (Layer 4)
 
-Anchoring requires a Solana devnet keypair authorized against a provisioned SAS credential and schema. See [docs/devnet-setup.md](./docs/devnet-setup.md) for the one-time operator provisioning.
+> **One-time operator setup required.** Anchoring to devnet needs a funded fee-payer keypair, a SAS credential naming that key as authority, and a SAS schema declaring the v0.2 receipt layout. Complete the step-by-step walkthrough in **[docs/devnet-setup.md](./docs/devnet-setup.md)** first (about 10 minutes including a faucet airdrop). It ends with you holding a `SAS_CREDENTIAL` pubkey, a `SAS_SCHEMA` pubkey, and a funded fee-payer keypair.
 
-Once your credential and schema exist:
+Once setup is complete, anchoring an attestation is one command:
 
     attest anchor attestation.json \
-      --credential <your-credential> --schema <your-schema> \
-      --fee-payer keys/devnet-fee-payer.json
+      --fee-payer $FEE_PAYER \
+      --credential $SAS_CREDENTIAL \
+      --schema $SAS_SCHEMA
 
     attest check attestation.json
 
 Re-anchoring to a different cluster preserves the original signature and appends a new anchor record without touching the first:
 
     attest reanchor attestation.json --to mainnet-beta \
-      --credential <mainnet-credential> --schema <mainnet-schema> \
-      --fee-payer keys/mainnet-fee-payer.json
+      --fee-payer $MAINNET_FEE_PAYER \
+      --credential $MAINNET_SAS_CREDENTIAL \
+      --schema $MAINNET_SAS_SCHEMA
 
 ### Conformance
 

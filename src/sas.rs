@@ -20,7 +20,7 @@
 //!   per environment (devnet / mainnet). The authority is the party that can
 //!   add or remove authorized signers.
 //! - **Schema.** `["schema", credential, schema_name, [version]]`. Created
-//!   once per environment under a credential. For conforming ANS deployments,
+//!   once per environment under a credential. For conforming deployments,
 //!   the schema data section is exactly 42 bytes:
 //!   `spec_version (2 bytes) || attestation_hash (32 bytes) || signer_asserted_at (8 bytes)`.
 //! - **Attestation.** `["attestation", credential, schema, nonce]`. Created
@@ -28,7 +28,7 @@
 //!   identical to the attestation_hash. This is opaque with respect to
 //!   signer, subject, activity_type, and every other identifying field.
 //!
-//! The final property is what enforces the ANS §5.1 non-walkability
+//! The final property is what enforces the §5.1 non-walkability
 //! discipline at the substrate level: a `getProgramAccounts` scan by
 //! `[b"attestation", credential, schema, *]` returns a list of opaque hashes,
 //! not a walkable directory of who signed what about whom.
@@ -63,7 +63,10 @@ pub const SAS_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
 pub mod devnet_reference {
     /// SAS credential PDA: name = "notary-cli-devnet", authority = fee-payer above.
     pub const CREDENTIAL: &str = "2wp93cFgFeZANui2rbDbFFkCju1f8NaaBBa9uuXeKZQw";
-    /// SAS schema PDA: name = "ans-v2-notary", version = 1.
+    /// SAS schema PDA: legacy name = "ans-v2-notary", version = 1. The
+    /// address stays valid on-chain; new provisioning uses the current
+    /// `SCHEMA_NAME` in provision.rs (`notary-attestation`), which derives
+    /// to a different PDA.
     ///
     /// Schema layout `[1, 13, 8]` (U16, VecU8, I64) corresponding to
     /// `spec_version || attestation_hash || signer_asserted_at`.
@@ -97,7 +100,7 @@ pub mod discriminator {
     pub const CLOSE_ATTESTATION: u8 = 7;
 }
 
-/// SAS account data section length for a conforming ANS attestation.
+/// SAS account data section length for a conforming Attestation Notary v0.2 record.
 ///
 /// ## Wire layout: 46 bytes total, not 42
 ///
@@ -122,11 +125,11 @@ pub mod discriminator {
 ///
 /// `bindings/sas.md §5` should be corrected to reflect the 46-byte wire size.
 /// Follow-up doc fix; not blocking on-chain provisioning.
-pub const ANS_V2_SPEC_VERSION_LEN: usize = 2;
-pub const ANS_V2_ATTESTATION_HASH_LEN: usize = 32;
-pub const ANS_V2_SIGNER_ASSERTED_AT_LEN: usize = 8;
-pub const ANS_V2_DATA_SECTION_WIRE_LEN: usize =
-    ANS_V2_SPEC_VERSION_LEN + 4 + ANS_V2_ATTESTATION_HASH_LEN + ANS_V2_SIGNER_ASSERTED_AT_LEN;
+pub const NOTARY_V2_SPEC_VERSION_LEN: usize = 2;
+pub const NOTARY_V2_ATTESTATION_HASH_LEN: usize = 32;
+pub const NOTARY_V2_SIGNER_ASSERTED_AT_LEN: usize = 8;
+pub const NOTARY_V2_DATA_SECTION_WIRE_LEN: usize =
+    NOTARY_V2_SPEC_VERSION_LEN + 4 + NOTARY_V2_ATTESTATION_HASH_LEN + NOTARY_V2_SIGNER_ASSERTED_AT_LEN;
 
 /// Byte offsets inside the 46-byte on-wire notary attestation data section.
 pub mod attestation_data_offset {
@@ -166,7 +169,7 @@ pub fn find_schema_pda(credential: &Pubkey, name: &[u8], version: u8) -> (Pubkey
 /// Seeds: `["attestation", credential, schema, nonce]` where
 /// `nonce = SHA-256(canonical_bytes)`. The nonce is opaque with respect to
 /// every identifying field of the attestation; this is the property that
-/// enforces the ANS §5.1 non-walkability discipline at the substrate level.
+/// enforces the §5.1 non-walkability discipline at the substrate level.
 ///
 /// The PDA is idempotent: two calls to notarize the same canonical bytes
 /// derive the same PDA, so SAS's account-already-exists check prevents
@@ -215,9 +218,9 @@ mod tests {
         // SAS's VecU8 encoding forces a 4-byte length prefix on the 32-byte
         // hash. Semantic payload is 42 bytes; on-wire is 46. If either the
         // constant or the offset table drifts, this fires.
-        assert_eq!(ANS_V2_DATA_SECTION_WIRE_LEN, 46);
+        assert_eq!(NOTARY_V2_DATA_SECTION_WIRE_LEN, 46);
         assert_eq!(
-            attestation_data_offset::SIGNER_ASSERTED_AT + ANS_V2_SIGNER_ASSERTED_AT_LEN,
+            attestation_data_offset::SIGNER_ASSERTED_AT + NOTARY_V2_SIGNER_ASSERTED_AT_LEN,
             46
         );
     }
@@ -241,18 +244,23 @@ mod tests {
             "baked devnet CREDENTIAL address must equal what the seeds derive"
         );
 
+        // The baked devnet SCHEMA was provisioned under the legacy schema
+        // name `ans-v2-notary` before the `notary-attestation` rename.
+        // Derivation here uses the historical literal on purpose; new
+        // provisioning uses `provision::SCHEMA_NAME` and derives to a
+        // different (unbaked) address.
         let (schema, _) = find_schema_pda(&credential, b"ans-v2-notary", 1);
         assert_eq!(
             schema.to_string(),
             devnet_reference::SCHEMA,
-            "baked devnet SCHEMA address must equal what the seeds derive"
+            "baked devnet SCHEMA address must equal what the legacy seeds derive"
         );
     }
 
     #[test]
     fn attestation_data_offsets_agree_with_layout_codes() {
         // Field ordering must match schema layout codes [1, 13, 8] and the
-        // ANS_V2_FIELD_NAMES declaration in provision.rs. If a reordering
+        // NOTARY_V2_FIELD_NAMES declaration in provision.rs. If a reordering
         // ever happens it would break every anchor + every reader.
         assert_eq!(attestation_data_offset::SPEC_VERSION, 0);
         assert_eq!(attestation_data_offset::ATTESTATION_HASH_LEN, 2);
@@ -271,8 +279,8 @@ mod tests {
         assert_eq!(cred_a, cred_b);
         assert_eq!(bump_a, bump_b);
 
-        let (schema_a, _) = find_schema_pda(&cred_a, b"ans-v2-notary", 1);
-        let (schema_b, _) = find_schema_pda(&cred_a, b"ans-v2-notary", 1);
+        let (schema_a, _) = find_schema_pda(&cred_a, b"notary-attestation", 1);
+        let (schema_b, _) = find_schema_pda(&cred_a, b"notary-attestation", 1);
         assert_eq!(schema_a, schema_b);
 
         let nonce = [0xEEu8; 32];
@@ -287,7 +295,7 @@ mod tests {
         // the seed function is broken and every attestation would collide.
         let authority = Pubkey::new_from_array([1u8; 32]);
         let (cred, _) = find_credential_pda(&authority, b"notary-cli-devnet");
-        let (schema, _) = find_schema_pda(&cred, b"ans-v2-notary", 1);
+        let (schema, _) = find_schema_pda(&cred, b"notary-attestation", 1);
 
         let (att_a, _) = find_attestation_pda(&cred, &schema, &[0xAAu8; 32]);
         let (att_b, _) = find_attestation_pda(&cred, &schema, &[0xBBu8; 32]);

@@ -7,7 +7,7 @@
 //! 2. **Schema** via SAS `CreateSchema` (discriminator=1). Defines the data
 //!    layout for all attestations under the credential.
 //!
-//! ## Schema layout for ANS v0.2
+//! ## Schema layout for the v0.2 receipt
 //!
 //! The `bindings/sas.md §5` document names a 42-byte data section:
 //! `spec_version (u16) || attestation_hash (32) || signer_asserted_at (i64)`.
@@ -39,8 +39,8 @@
 
 use crate::sas::{
     discriminator, find_credential_pda, find_schema_pda,
-    ANS_V2_ATTESTATION_HASH_LEN, ANS_V2_DATA_SECTION_WIRE_LEN, ANS_V2_SIGNER_ASSERTED_AT_LEN,
-    ANS_V2_SPEC_VERSION_LEN, SAS_PROGRAM_ID,
+    NOTARY_V2_ATTESTATION_HASH_LEN, NOTARY_V2_DATA_SECTION_WIRE_LEN, NOTARY_V2_SIGNER_ASSERTED_AT_LEN,
+    NOTARY_V2_SPEC_VERSION_LEN, SAS_PROGRAM_ID,
 };
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
@@ -53,22 +53,27 @@ use solana_sdk::system_program;
 /// Credential name used by the notary CLI reference deployment on devnet.
 pub const CREDENTIAL_NAME_DEVNET: &str = "notary-cli-devnet";
 
-/// Schema name used by the notary CLI reference deployment.
-pub const SCHEMA_NAME: &str = "ans-v2-notary";
+/// Schema name for new v0.2 provisioning. Historical note: the notary CLI's
+/// original devnet reference schema was provisioned under the legacy name
+/// `ans-v2-notary` at address `Cnu2C6jK6GpUdjWXjacJqQyzYwzr3mXpRKSj7gmrn4wW`.
+/// New adopter provisioning uses this constant; the old on-chain schema
+/// remains valid under its legacy name for the notary CLI's own historical
+/// anchors.
+pub const SCHEMA_NAME: &str = "notary-attestation";
 
-/// Schema version for the ANS v0.2 layout.
+/// Schema version for the v0.2 receipt layout.
 pub const SCHEMA_VERSION: u8 = 1;
 
 /// Human-readable schema description stored on-chain.
 pub const SCHEMA_DESCRIPTION: &str =
     "Attestation Notary v0.2 receipt: spec_version + attestation_hash + signer_asserted_at.";
 
-/// SAS schema layout codes for ANS v0.2 (see module doc).
+/// SAS schema layout codes for the v0.2 receipt (see module doc).
 /// U16 = 1, VecU8 = 13, I64 = 8.
-pub const ANS_V2_SCHEMA_LAYOUT: &[u8] = &[1, 13, 8];
+pub const NOTARY_V2_SCHEMA_LAYOUT: &[u8] = &[1, 13, 8];
 
 /// Schema field names in the same order as the layout codes.
-pub const ANS_V2_FIELD_NAMES: &[&str] =
+pub const NOTARY_V2_FIELD_NAMES: &[&str] =
     &["spec_version", "attestation_hash", "signer_asserted_at"];
 
 // ─── Borsh-lite encoders ──────────────────────────────────────────────
@@ -189,7 +194,7 @@ pub fn create_schema_ix(
     }
 }
 
-// ─── ANS v0.2 data section encoder ────────────────────────────────────
+// ─── v0.2 data section encoder ────────────────────────────────────────
 //
 // Encoding is what `attest anchor` will submit as the `data` field of the
 // SAS `CreateAttestation` instruction. Layout matches the schema declared
@@ -204,28 +209,28 @@ pub fn create_schema_ix(
 ///   signer_asserted_at   (i64 LE)          8 bytes
 ///   ------------------------------------------
 ///   total                                 46 bytes
-pub fn encode_ans_v2_data(
+pub fn encode_notary_v2_data(
     spec_version: u16,
     attestation_hash: &[u8; 32],
     signer_asserted_at: i64,
-) -> [u8; ANS_V2_DATA_SECTION_WIRE_LEN] {
-    let mut out = [0u8; ANS_V2_DATA_SECTION_WIRE_LEN];
+) -> [u8; NOTARY_V2_DATA_SECTION_WIRE_LEN] {
+    let mut out = [0u8; NOTARY_V2_DATA_SECTION_WIRE_LEN];
     let mut off = 0;
 
-    out[off..off + ANS_V2_SPEC_VERSION_LEN].copy_from_slice(&spec_version.to_le_bytes());
-    off += ANS_V2_SPEC_VERSION_LEN;
+    out[off..off + NOTARY_V2_SPEC_VERSION_LEN].copy_from_slice(&spec_version.to_le_bytes());
+    off += NOTARY_V2_SPEC_VERSION_LEN;
 
-    out[off..off + 4].copy_from_slice(&(ANS_V2_ATTESTATION_HASH_LEN as u32).to_le_bytes());
+    out[off..off + 4].copy_from_slice(&(NOTARY_V2_ATTESTATION_HASH_LEN as u32).to_le_bytes());
     off += 4;
 
-    out[off..off + ANS_V2_ATTESTATION_HASH_LEN].copy_from_slice(attestation_hash);
-    off += ANS_V2_ATTESTATION_HASH_LEN;
+    out[off..off + NOTARY_V2_ATTESTATION_HASH_LEN].copy_from_slice(attestation_hash);
+    off += NOTARY_V2_ATTESTATION_HASH_LEN;
 
-    out[off..off + ANS_V2_SIGNER_ASSERTED_AT_LEN]
+    out[off..off + NOTARY_V2_SIGNER_ASSERTED_AT_LEN]
         .copy_from_slice(&signer_asserted_at.to_le_bytes());
-    off += ANS_V2_SIGNER_ASSERTED_AT_LEN;
+    off += NOTARY_V2_SIGNER_ASSERTED_AT_LEN;
 
-    debug_assert_eq!(off, ANS_V2_DATA_SECTION_WIRE_LEN);
+    debug_assert_eq!(off, NOTARY_V2_DATA_SECTION_WIRE_LEN);
     out
 }
 
@@ -285,19 +290,19 @@ mod tests {
             &auth,
             &cred,
             &schema,
-            "ans-v2-notary",
+            SCHEMA_NAME,
             "test",
-            ANS_V2_SCHEMA_LAYOUT,
-            ANS_V2_FIELD_NAMES,
+            NOTARY_V2_SCHEMA_LAYOUT,
+            NOTARY_V2_FIELD_NAMES,
         );
         assert_eq!(ix.data[0], 1, "CreateSchema discriminator must be 1");
         assert_eq!(ix.accounts.len(), 5);
     }
 
     #[test]
-    fn ans_v2_data_encoding_is_46_bytes_and_field_layout_is_stable() {
+    fn notary_v2_data_encoding_is_46_bytes_and_field_layout_is_stable() {
         let hash = [0xAB; 32];
-        let data = encode_ans_v2_data(3, &hash, 1_780_000_000);
+        let data = encode_notary_v2_data(3, &hash, 1_780_000_000);
         assert_eq!(data.len(), 46);
 
         // spec_version = 3 as u16 LE

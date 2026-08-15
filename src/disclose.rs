@@ -575,7 +575,7 @@ mod tests {
             nonce: hex::encode([0x99u8; 32]),
             signature: hex::encode(sig.to_bytes()),
             payload: Some(payload),
-            anchors: Vec::new(),
+            legacy_anchors: Vec::new(),
         }
     }
 

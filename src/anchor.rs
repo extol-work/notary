@@ -15,13 +15,23 @@
 //!   different cluster. The signed canonical bytes and signature are unchanged;
 //!   only a new SAS PDA is created on the new substrate.
 //!
-//! ## Multi-anchor discipline
+//! ## Multi-anchor discipline: one file per anchor
 //!
 //! An attestation may be anchored to any number of substrates over its
-//! lifetime. Each successful [`anchor`] call appends an [`AnchorRecord`] to
-//! the attestation's `anchors` field. Nothing is ever removed; the record is
-//! append-only. This matches §5 semantics: notarization is a durable
-//! commitment, not a revocable link.
+//! lifetime. Each successful [`anchor`] call writes a sibling file next to
+//! the attestation named `<stem>.anchor-<cluster>.json` (see [`AnchorFile`]).
+//! The attestation.json itself is never mutated after `attest sign` produces
+//! it: it is a signed artifact, and signed artifacts stay immutable.
+//!
+//! Multiple anchors on the same attestation live as multiple sibling files
+//! (`foo.anchor-devnet.json`, `foo.anchor-mainnet-beta.json`). Nothing is
+//! ever removed; each anchor file is append-only in effect. This matches §5
+//! semantics: notarization is a durable commitment, not a revocable link.
+//!
+//! For backward compatibility with attestation.json files produced before the
+//! two-file split, [`discover_anchors`] also reads legacy embedded anchors
+//! (via `Attestation::legacy_anchors`) as if they were sibling files. Old
+//! bundles verify and check without any migration on the user's part.
 //!
 //! ## SAS attestation account layout
 //!
@@ -182,20 +192,22 @@ pub enum AnchorOutcome {
 /// Notarize `att` to `opts.cluster` under the specified credential + schema,
 /// paying tx fees + rent from `fee_payer`.
 ///
-/// Idempotent: if `att.anchors` already contains a record for `opts.cluster`
-/// AND the on-chain attestation PDA still exists, returns
-/// [`AnchorOutcome::AlreadyAnchored`] with the existing record. Otherwise
-/// submits `CreateAttestation` and returns [`AnchorOutcome::Anchored`].
+/// Idempotent at the substrate level: the SAS PDA seed is
+/// `SHA-256(canonical_bytes)`, so re-anchoring the same attestation to the
+/// same cluster derives the same PDA. If the caller passes `existing`
+/// pointing at a prior anchor record AND the on-chain account still exists,
+/// returns [`AnchorOutcome::AlreadyAnchored`] with either the caller-provided
+/// record or a synthesized one from on-chain state. Otherwise submits
+/// `CreateAttestation` and returns [`AnchorOutcome::Anchored`].
 ///
-/// **Silent-drift guard**: if the attestation JSON claims a different
-/// credential/schema for the same cluster than what the caller passed, this
-/// fails rather than proceeding: an attestation should have exactly one
-/// canonical anchor per cluster, and mismatched credential/schema PDAs would
-/// silently create a second one.
+/// The `existing` argument lets `cmd_anchor` pass in the record found in the
+/// sibling `<stem>.anchor-<cluster>.json` file (if one is present). The
+/// function itself is stateless with respect to file layout.
 pub fn anchor(
     att: &Attestation,
     fee_payer: &devnet::LoadedKeypair,
     opts: AnchorOpts,
+    existing: Option<&AnchorRecord>,
 ) -> anyhow::Result<AnchorOutcome> {
     // Resolve credential and schema. Defaults are the reference deployment
     // for devnet; mainnet has no defaults in this build and requires overrides.
@@ -214,34 +226,32 @@ pub fn anchor(
         CommitmentConfig::confirmed(),
     );
 
-    // Idempotency: prefer the existing on-chain state over the JSON record,
-    // because the JSON is derived from a previous anchor and may be stale
-    // (e.g., manually edited). If the PDA exists, we compose an anchor record
-    // from the on-chain data.
+    // Idempotency: SAS's PDA seed is deterministic (SHA-256(canonical_bytes)),
+    // so if the PDA already exists on-chain the anchor operation has already
+    // happened. Prefer the caller-provided `existing` record when available;
+    // otherwise synthesize one from on-chain state.
+    let _ = att; // reserved for future use (e.g., cross-checking on-chain data)
     if let Ok(account) = rpc.get_account(&attestation_pda) {
         if account.owner == SAS_PROGRAM_ID {
-            // Look for an existing record in att.anchors that matches this PDA.
-            let existing = att
-                .anchors
-                .iter()
-                .find(|r| r.attestation_pda == attestation_pda.to_string())
-                .cloned();
             if let Some(rec) = existing {
-                return Ok(AnchorOutcome::AlreadyAnchored(rec));
+                // If the caller-passed record's PDA matches, return it verbatim
+                // so the caller's tx signature and block time carry forward.
+                if rec.attestation_pda == attestation_pda.to_string() {
+                    return Ok(AnchorOutcome::AlreadyAnchored(rec.clone()));
+                }
             }
-            // Account exists but attestation.json does not reference it. This
-            // is legitimate (JSON was rewritten, older bundle) and safe to
-            // recover: synthesize a record from on-chain state.
-            let sig_str = "".to_string(); // unknown; we did not submit this tx
-            let (slot, block_time) = (0u64, 0i64); // unknown; historical anchor
+            // No caller-provided record, or the caller's record referenced a
+            // different PDA (unusual; would indicate their sibling file is
+            // stale). Synthesize a record from on-chain state so the caller
+            // can persist an accurate sibling file.
             let rec = AnchorRecord {
                 cluster: opts.cluster.as_str().to_string(),
                 credential: credential.to_string(),
                 schema: schema.to_string(),
                 attestation_pda: attestation_pda.to_string(),
-                tx_signature: sig_str,
-                anchored_at_slot: slot,
-                anchored_at_block_time: block_time,
+                tx_signature: String::new(), // unknown; historical anchor
+                anchored_at_slot: 0,          // unknown; historical anchor
+                anchored_at_block_time: 0,    // unknown; historical anchor
                 beta: opts.cluster.is_beta(),
             };
             return Ok(AnchorOutcome::AlreadyAnchored(rec));
@@ -539,6 +549,193 @@ fn resolve_credential_and_schema(opts: &AnchorOpts) -> anyhow::Result<(Pubkey, P
     Ok((credential, schema))
 }
 
+// ─── File-layout helpers (sibling anchor files) ─────────────────────
+//
+// Anchors live in files named `<attestation-stem>.anchor-<cluster>.json` next
+// to the attestation itself. Each file is self-identifying: it carries the
+// `attestation_hash` (SHA-256 of the canonical bytes) so a reader can confirm
+// the anchor covers the attestation they think it does before doing any RPC.
+//
+// Discovery (`discover_anchors`) unions three sources:
+//   1. Sibling `<stem>.anchor-*.json` files in the same directory
+//   2. Legacy embedded `Attestation.legacy_anchors` (pre-refactor bundles)
+//
+// Duplicates (same cluster in both a sibling file and legacy_anchors) prefer
+// the sibling file, since that is the current authoritative shape.
+
+/// Self-identifying anchor record: an [`AnchorRecord`] plus the SHA-256 of
+/// the canonical bytes it covers. Written by `attest anchor` as a sibling
+/// file, read by `attest check` and `attest confirm`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnchorFile {
+    /// SHA-256 of the attestation's canonical bytes (lowercase hex). Lets a
+    /// reader confirm which attestation this anchor covers without doing an
+    /// RPC call.
+    pub attestation_hash: String,
+
+    /// The anchor record itself, flattened into the same JSON object.
+    #[serde(flatten)]
+    pub record: AnchorRecord,
+}
+
+/// Compute the sibling anchor file path for `(attestation_path, cluster)`.
+///
+/// `foo.json` + `devnet` → `foo.anchor-devnet.json`
+/// `attestation.json` + `mainnet-beta` → `attestation.anchor-mainnet-beta.json`
+pub fn anchor_file_path(attestation_path: &std::path::Path, cluster: &Cluster) -> std::path::PathBuf {
+    let stem = attestation_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("attestation");
+    let parent = attestation_path.parent().unwrap_or_else(|| std::path::Path::new(""));
+    parent.join(format!("{stem}.anchor-{}.json", cluster.as_str()))
+}
+
+/// Write an anchor file next to the attestation.
+///
+/// Refuses to overwrite an existing file: an anchor operation that succeeded
+/// once should not silently blast over a prior record. Callers who want to
+/// re-anchor an existing cluster should delete the sibling file explicitly.
+pub fn write_anchor_file(
+    path: &std::path::Path,
+    attestation_hash: &[u8; 32],
+    record: &AnchorRecord,
+) -> anyhow::Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "refusing to overwrite existing anchor file {}. \
+             Delete it explicitly if you intend to replace it.",
+            path.display()
+        );
+    }
+    let file = AnchorFile {
+        attestation_hash: hex::encode(attestation_hash),
+        record: record.clone(),
+    };
+    let json = serde_json::to_string_pretty(&file)?;
+    std::fs::write(path, json.as_bytes())
+        .with_context(|| format!("write anchor file {}", path.display()))?;
+    Ok(())
+}
+
+/// Read an anchor file. Returns the full [`AnchorFile`] including the
+/// self-identifying `attestation_hash`.
+pub fn read_anchor_file(path: &std::path::Path) -> anyhow::Result<AnchorFile> {
+    let json = std::fs::read_to_string(path)
+        .with_context(|| format!("read anchor file {}", path.display()))?;
+    let file: AnchorFile = serde_json::from_str(&json)
+        .with_context(|| format!("parse {} as anchor file JSON", path.display()))?;
+    Ok(file)
+}
+
+/// A discovered anchor, plus where it came from (for error messages).
+#[derive(Debug, Clone)]
+pub struct DiscoveredAnchor {
+    /// Human-readable source: either a sibling file path, or the string
+    /// `"legacy embedded in attestation.json"`.
+    pub source: String,
+    pub record: AnchorRecord,
+}
+
+/// Discover all anchors associated with an attestation.
+///
+/// Unions two sources:
+///   1. Sibling files matching `<stem>.anchor-*.json` in the same directory
+///      as `attestation_path`.
+///   2. `Attestation.legacy_anchors` (embedded in the attestation.json for
+///      pre-refactor bundles).
+///
+/// Sibling files also carry an `attestation_hash` field that is cross-checked
+/// against the attestation's actual hash: if a sibling file's declared hash
+/// does not match, the file is skipped and a warning is emitted. This defends
+/// against a mixed-up bundle where the wrong anchor file was dropped next to
+/// an attestation.
+pub fn discover_anchors(
+    attestation_path: &std::path::Path,
+    att: &Attestation,
+) -> anyhow::Result<Vec<DiscoveredAnchor>> {
+    let expected_hash = att
+        .to_canonical_fields()
+        .context("reconstruct canonical fields for anchor discovery")?
+        .attestation_hash();
+    let expected_hash_hex = hex::encode(expected_hash);
+
+    let mut out: Vec<DiscoveredAnchor> = Vec::new();
+    let mut seen_clusters: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Source 1: sibling files.
+    let stem = attestation_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("attestation");
+    let dir = attestation_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+
+    // Only list dir if it exists. In-memory tests may pass paths that don't.
+    let dir_to_read: &std::path::Path = if dir.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        dir
+    };
+    if dir_to_read.exists() {
+        let entries = std::fs::read_dir(dir_to_read)
+            .with_context(|| format!("list directory {}", dir_to_read.display()))?;
+        let prefix = format!("{stem}.anchor-");
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = match name.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            if !name_str.starts_with(&prefix) || !name_str.ends_with(".json") {
+                continue;
+            }
+            let file = match read_anchor_file(&entry.path()) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!(
+                        "warning: skipping unreadable anchor file {}: {e}",
+                        entry.path().display()
+                    );
+                    continue;
+                }
+            };
+            if file.attestation_hash != expected_hash_hex {
+                eprintln!(
+                    "warning: skipping {}: declares attestation_hash {} but attestation's hash is {}",
+                    entry.path().display(),
+                    file.attestation_hash,
+                    expected_hash_hex
+                );
+                continue;
+            }
+            seen_clusters.insert(file.record.cluster.clone());
+            out.push(DiscoveredAnchor {
+                source: entry.path().display().to_string(),
+                record: file.record,
+            });
+        }
+    }
+
+    // Source 2: legacy embedded anchors. Skip any cluster already found in a
+    // sibling file (sibling wins, since it's the current canonical shape).
+    for rec in &att.legacy_anchors {
+        if seen_clusters.contains(&rec.cluster) {
+            continue;
+        }
+        out.push(DiscoveredAnchor {
+            source: "legacy embedded in attestation.json".to_string(),
+            record: rec.clone(),
+        });
+    }
+
+    // Deterministic ordering by cluster for stable output.
+    out.sort_by(|a, b| a.record.cluster.cmp(&b.record.cluster));
+    Ok(out)
+}
+
 fn fetch_slot_and_block_time(rpc: &RpcClient, sig_str: &str) -> anyhow::Result<(u64, i64)> {
     use solana_sdk::signature::Signature;
     let sig = Signature::from_str(sig_str).context("parse tx signature as base58")?;
@@ -603,6 +800,142 @@ mod tests {
         let expiry_off = 37 + NOTARY_V2_DATA_SECTION_WIRE_LEN;
         assert_eq!(&ix.data[expiry_off..expiry_off + 8], &0i64.to_le_bytes());
         assert_eq!(ix.accounts.len(), 6);
+    }
+
+    #[test]
+    fn anchor_file_path_uses_stem_dot_anchor_dash_cluster_dot_json() {
+        use std::path::PathBuf;
+        let att = PathBuf::from("/tmp/foo/attestation.json");
+        let path = anchor_file_path(&att, &Cluster::Devnet);
+        assert_eq!(path.to_str().unwrap(), "/tmp/foo/attestation.anchor-devnet.json");
+
+        let att = PathBuf::from("bar.json");
+        let path = anchor_file_path(&att, &Cluster::MainnetBeta);
+        assert_eq!(path.to_str().unwrap(), "bar.anchor-mainnet-beta.json");
+    }
+
+    #[test]
+    fn anchor_file_roundtrips_and_carries_attestation_hash() {
+        use std::path::PathBuf;
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "notary-anchor-file-{}.anchor-devnet.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let record = AnchorRecord {
+            cluster: "devnet".into(),
+            credential: "Cred111111111111111111111111111111111111111".into(),
+            schema: "Schm11111111111111111111111111111111111111".into(),
+            attestation_pda: "Att111111111111111111111111111111111111111".into(),
+            tx_signature: "Tx11111111111111111111111111111111111111111".into(),
+            anchored_at_slot: 42,
+            anchored_at_block_time: 1_780_000_000,
+            beta: true,
+        };
+        let hash = [0xAAu8; 32];
+
+        write_anchor_file(&path, &hash, &record).expect("write");
+        let file = read_anchor_file(&path).expect("read");
+
+        assert_eq!(file.attestation_hash, hex::encode(hash));
+        assert_eq!(file.record, record);
+
+        // Refuses to overwrite.
+        let err = write_anchor_file(&path, &hash, &record).expect_err("second write must refuse");
+        assert!(err.to_string().contains("refusing to overwrite"));
+
+        let _ = std::fs::remove_file(&path);
+        let _: PathBuf = path;
+    }
+
+    #[test]
+    fn discover_anchors_reads_sibling_files_and_falls_back_to_legacy() {
+        // Build a minimal Attestation with a known signer_hex etc., write it
+        // to a tempdir, drop one sibling anchor file, and set one legacy
+        // embedded anchor for a different cluster. Discovery should return
+        // both, with the sibling for its cluster preferred over any legacy
+        // record that happens to also cover it.
+        use std::fs;
+        let tmpdir = std::env::temp_dir().join(format!(
+            "notary-discover-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmpdir);
+        fs::create_dir_all(&tmpdir).expect("mkdir");
+        let att_path = tmpdir.join("bundle.json");
+
+        // Minimal legal attestation. Values are placeholders; discovery only
+        // needs the canonical hash, and legacy_anchors get read verbatim.
+        let att = Attestation {
+            spec_version: crate::canonical::SPEC_VERSION_V02,
+            signer: hex::encode([1u8; 32]),
+            subject: hex::encode([2u8; 32]),
+            activity_type: "https://example.org/x/v1".into(),
+            data_hash: hex::encode([3u8; 32]),
+            witness_for: hex::encode([0u8; 32]),
+            source_hash: hex::encode([0u8; 32]),
+            source_type: 1,
+            confidence: 10000,
+            witnessing_depth: 0,
+            attestor_relationship: 0,
+            signer_asserted_at: 1_780_000_000,
+            retention_hint: 0,
+            nonce: hex::encode([4u8; 32]),
+            signature: hex::encode([5u8; 64]),
+            payload: None,
+            legacy_anchors: vec![AnchorRecord {
+                cluster: "mainnet-beta".into(),
+                credential: "C-legacy".into(),
+                schema: "S-legacy".into(),
+                attestation_pda: "P-legacy".into(),
+                tx_signature: "T-legacy".into(),
+                anchored_at_slot: 0,
+                anchored_at_block_time: 0,
+                beta: false,
+            }],
+        };
+        // Write attestation.json so its path is real (discover_anchors uses
+        // the directory of the path to list siblings).
+        fs::write(&att_path, serde_json::to_string_pretty(&att).unwrap()).expect("write att");
+
+        // Write one sibling file for devnet with the CORRECT attestation hash.
+        let hash = att.to_canonical_fields().unwrap().attestation_hash();
+        let sibling_path = anchor_file_path(&att_path, &Cluster::Devnet);
+        let sibling_record = AnchorRecord {
+            cluster: "devnet".into(),
+            credential: "C-sib".into(),
+            schema: "S-sib".into(),
+            attestation_pda: "P-sib".into(),
+            tx_signature: "T-sib".into(),
+            anchored_at_slot: 100,
+            anchored_at_block_time: 1_780_000_100,
+            beta: true,
+        };
+        write_anchor_file(&sibling_path, &hash, &sibling_record).expect("write sibling");
+
+        // Discover: should find both.
+        let discovered = discover_anchors(&att_path, &att).expect("discover");
+        assert_eq!(discovered.len(), 2, "sibling + legacy");
+        let clusters: Vec<&str> = discovered.iter().map(|d| d.record.cluster.as_str()).collect();
+        assert!(clusters.contains(&"devnet"));
+        assert!(clusters.contains(&"mainnet-beta"));
+
+        // Sibling record wins for its own cluster (source contains the path).
+        let dv = discovered.iter().find(|d| d.record.cluster == "devnet").unwrap();
+        assert!(dv.source.contains("bundle.anchor-devnet.json"));
+        assert_eq!(dv.record.credential, "C-sib");
+
+        // Legacy record shows up with the informative source label.
+        let mb = discovered
+            .iter()
+            .find(|d| d.record.cluster == "mainnet-beta")
+            .unwrap();
+        assert_eq!(mb.source, "legacy embedded in attestation.json");
+        assert_eq!(mb.record.credential, "C-legacy");
+
+        let _ = fs::remove_dir_all(&tmpdir);
     }
 
     #[test]

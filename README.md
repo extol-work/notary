@@ -84,21 +84,35 @@ Every check has a distinct error class. A tampered payload is rejected as `tampe
 
 > **One-time operator setup required.** Anchoring to devnet needs a funded fee-payer keypair, a SAS credential naming that key as authority, and a SAS schema declaring the v0.2 receipt layout. Complete the step-by-step walkthrough in **[docs/devnet-setup.md](./docs/devnet-setup.md)** first (about 10 minutes including a faucet airdrop). It ends with you holding a `SAS_CREDENTIAL` pubkey, a `SAS_SCHEMA` pubkey, and a funded fee-payer keypair.
 
-Once setup is complete, anchoring an attestation is one command:
+Once setup is complete:
 
-    attest anchor attestation.json \
+    # Anchor. Writes a sibling file `attestation.anchor-devnet.json` next to
+    # attestation.json. Anchoring never mutates the attestation itself; the
+    # signed artifact stays immutable.
+    attest anchor attestation.json --cluster devnet \
       --fee-payer $FEE_PAYER \
       --credential $SAS_CREDENTIAL \
       --schema $SAS_SCHEMA
 
+    # Check. Discovers all `attestation.anchor-*.json` siblings and confirms
+    # each anchor matches the local attestation.
     attest check attestation.json
 
-Re-anchoring to a different cluster preserves the original signature and appends a new anchor record without touching the first:
+    # Confirm. Runs verify (Layer 1+2) + check (Layer 4) in one command with
+    # a unified pass/fail verdict. This is the "did they send me what they
+    # said and is it real?" command for a bundle from a third party.
+    attest confirm attestation.json
 
-    attest reanchor attestation.json --to mainnet-beta \
+Anchoring the same attestation to a second cluster writes a second sibling file. Both anchors coexist as durable notarizations of the same signed content:
+
+    attest anchor attestation.json --cluster mainnet-beta \
       --fee-payer $MAINNET_FEE_PAYER \
       --credential $MAINNET_SAS_CREDENTIAL \
       --schema $MAINNET_SAS_SCHEMA
+
+    # A subsequent `attest check attestation.json` now confirms both anchors.
+
+The two-file layout means a full bundle you can hand to a third party is: `attestation.json` (the signed artifact) plus zero or more `attestation.anchor-<cluster>.json` files (the notarization receipts). Pre-refactor bundles that embedded anchors inside `attestation.json` still verify and check without any migration; the CLI reads legacy embedded anchors as a fallback.
 
 ### Conformance
 

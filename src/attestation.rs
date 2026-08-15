@@ -66,14 +66,20 @@ pub struct Attestation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
 
-    /// On-chain notarization records. One entry per (attestation, cluster).
-    /// Appended by `attest anchor`; read by `attest check` and `attest reanchor`.
+    /// Legacy backward-compat field. **Never written by current code.** Signed
+    /// artifacts are immutable after `attest sign`; anchor metadata now lives
+    /// in sibling files named `<stem>.anchor-<cluster>.json` (see
+    /// [`crate::anchor::AnchorFile`]).
     ///
-    /// Empty for a signed-but-not-yet-notarized attestation (Layer 1+2 only).
-    /// May contain multiple entries once an attestation has been anchored to
-    /// more than one cluster (e.g., devnet during beta, mainnet-beta on cutover).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub anchors: Vec<AnchorRecord>,
+    /// This field remains as a deserialization-only entry point so
+    /// pre-two-file-refactor attestation.json files with an embedded
+    /// `"anchors": [...]` array still parse and check cleanly under
+    /// `attest check` and `attest confirm`. On write the field is always
+    /// omitted (empty vec + `skip_serializing_if`), so re-saving an old
+    /// attestation.json would strip the embedded anchors. Nothing in the
+    /// current codebase re-saves an attestation.json, so this never happens.
+    #[serde(default, rename = "anchors", skip_serializing_if = "Vec::is_empty")]
+    pub legacy_anchors: Vec<AnchorRecord>,
 }
 
 impl Attestation {

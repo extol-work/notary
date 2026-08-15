@@ -823,8 +823,8 @@ fn cmd_admin_provision_schema(fee_payer_path: PathBuf) -> anyhow::Result<()> {
         &schema_pda,
         provision::SCHEMA_NAME,
         provision::SCHEMA_DESCRIPTION,
-        provision::ANS_V2_SCHEMA_LAYOUT,
-        provision::ANS_V2_FIELD_NAMES,
+        provision::NOTARY_V2_SCHEMA_LAYOUT,
+        provision::NOTARY_V2_FIELD_NAMES,
     );
     let recent_blockhash = client
         .get_latest_blockhash()

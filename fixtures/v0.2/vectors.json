@@ -124,6 +124,30 @@
       "expected_canonical_bytes_hex": "03006e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf17788770077887700778877007788770077887700778877007788770077887700ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0000000000000000000000000000000000000000000000000000000000000000e1f2a3b4c5d6e7f8091a2b3c4d5e6f7081920a1b2c3d4e5f60718293041516170f004c1d040690a6186a0000000000000000000000006767676767676767676767676767676767676767676767676767676767676767",
       "expected_canonical_bytes_len": 248,
       "expected_signature_hex": "b0e59d67eda3eeb769d8f393305eba8c4a9472ccb6d068166ced4b83a24c015ac68bd08f162258fb07dac4b4c5e50c622dcbfddd31d5c79486e029b06600da04"
+    },
+    {
+      "name": "revocation_of_vector_1",
+      "notes": "Additive revocation attestation per SPEC §4.3. activity_type = https://sworn.dev/v1/revocation (activity_hash precomputed as SHA-256(NFC(uri))). subject = SHA-256(canonical bytes of vector 1, orcid_authorship_happy_path), naming the target attestation being revoked. Signer is vector 1's signer (only the original signer can revoke, per SPEC §4.3). data_hash is SHA-256 of the RFC 8785 canonicalization of {\"reason\":\"test revocation for golden vector\"}. source_type = self_reported (1) and source_hash = 32 zero bytes: revocations are the signer's own act, no external source. witnessing_depth = unspecified (0) and attestor_relationship = unknown (0): SPEC §9.3 and §9.4 (as amended in v0.2.1) forbid the self_asserted / self values when signer != subject, and here subject is a hash of another attestation, not a party. Exercises the additive-revocation pattern and the sourceless rule under a non-self subject.",
+      "spec_version": 3,
+      "input_fields": {
+        "signer_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "subject_hex": "00fbbd6a9272620fa3a6773e824dea0cb4afd759c37d4416b2ca0b21b2187657",
+        "activity_hash_hex": "f44c48e055d5585fdb8c5fce0df8a8810dad3268987c3cdc5f31cdd89a937c01",
+        "data_hash_hex": "23e6ae0ef3443c6b5fe2152a0a12539d79aa1b0f3790959637836ba90b4e2923",
+        "witness_for_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "source_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "source_type": 1,
+        "confidence": 10000,
+        "witnessing_depth": 0,
+        "attestor_relationship": 0,
+        "signer_asserted_at": 1780000500,
+        "retention_hint": -1,
+        "nonce_hex": "6969696969696969696969696969696969696969696969696969696969696969"
+      },
+      "signer_secret_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "expected_canonical_bytes_hex": "03008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00fbbd6a9272620fa3a6773e824dea0cb4afd759c37d4416b2ca0b21b2187657f44c48e055d5585fdb8c5fce0df8a8810dad3268987c3cdc5f31cdd89a937c0123e6ae0ef3443c6b5fe2152a0a12539d79aa1b0f3790959637836ba90b4e292300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010010270000f4a6186a00000000ffffffffffffffff6969696969696969696969696969696969696969696969696969696969696969",
+      "expected_canonical_bytes_len": 248,
+      "expected_signature_hex": "8ba110bcc65446c54946858b28f9c0086416851ebcb5ea617546fc992059e4fb98843a6db44d1cb773fcf26db669da60532e178d5a7a94ac562a53bc95ea1302"
     }
   ]
 }

@@ -66,7 +66,7 @@ pub struct InputFields {
 
 // ─── Emit ────────────────────────────────────────────────────────────
 //
-// Five vectors, deterministic. Baked from the same input shapes as
+// Six vectors, deterministic. Baked from the same input shapes as
 // v0.1-final so a diff of v0.1-final vs v0.2 vectors reveals only the
 // spec_version byte change (bytes 0..2: 02 00 → 03 00) and the
 // corresponding signature change. Cleanest possible demonstration that
@@ -191,6 +191,40 @@ fn baked_vectors() -> Vec<(&'static str, &'static str, InputFields, &'static str
                 nonce_hex: "6767676767676767676767676767676767676767676767676767676767676767".into(),
             },
             "0505050505050505050505050505050505050505050505050505050505050505",
+        ),
+        (
+            "revocation_of_vector_1",
+            "Additive revocation attestation per SPEC §4.3. activity_type = \
+             https://sworn.dev/v1/revocation (activity_hash precomputed as \
+             SHA-256(NFC(uri))). subject = SHA-256(canonical bytes of vector 1, \
+             orcid_authorship_happy_path), naming the target attestation being \
+             revoked. Signer is vector 1's signer (only the original signer can \
+             revoke, per SPEC §4.3). data_hash is SHA-256 of the RFC 8785 \
+             canonicalization of {\"reason\":\"test revocation for golden vector\"}. \
+             source_type = self_reported (1) and source_hash = 32 zero bytes: \
+             revocations are the signer's own act, no external source. \
+             witnessing_depth = unspecified (0) and attestor_relationship = \
+             unknown (0): SPEC §9.3 and §9.4 (as amended in v0.2.1) forbid the \
+             self_asserted / self values when signer != subject, and here \
+             subject is a hash of another attestation, not a party. Exercises \
+             the additive-revocation pattern and the sourceless rule under a \
+             non-self subject.",
+            InputFields {
+                signer_hex: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c".into(),
+                subject_hex: "00fbbd6a9272620fa3a6773e824dea0cb4afd759c37d4416b2ca0b21b2187657".into(),
+                activity_hash_hex: "f44c48e055d5585fdb8c5fce0df8a8810dad3268987c3cdc5f31cdd89a937c01".into(),
+                data_hash_hex: "23e6ae0ef3443c6b5fe2152a0a12539d79aa1b0f3790959637836ba90b4e2923".into(),
+                witness_for_hex: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                source_hash_hex: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                source_type: 1,
+                confidence: 10000,
+                witnessing_depth: 0,
+                attestor_relationship: 0,
+                signer_asserted_at: 1780000500,
+                retention_hint: -1,
+                nonce_hex: "6969696969696969696969696969696969696969696969696969696969696969".into(),
+            },
+            "0101010101010101010101010101010101010101010101010101010101010101",
         ),
     ]
 }
@@ -466,10 +500,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn emit_produces_five_vectors_with_declared_spec_version_v3() {
+    fn emit_produces_six_vectors_with_declared_spec_version_v3() {
         let file = emit_vectors().unwrap();
         assert_eq!(file.spec_version, SPEC_VERSION_V02);
-        assert_eq!(file.vectors.len(), 5);
+        assert_eq!(file.vectors.len(), 6);
         for v in &file.vectors {
             assert_eq!(v.spec_version, SPEC_VERSION_V02);
             assert_eq!(v.expected_canonical_bytes_len, CANONICAL_LEN);

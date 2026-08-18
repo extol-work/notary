@@ -44,8 +44,8 @@ fn shipped_v02_vectors_verify_byte_for_byte() {
          cargo run -- vectors emit --out fixtures/v0.2/vectors.json"
     );
 
-    // Sanity check on output: should mention PASS and all 5 vectors.
-    assert!(stdout.contains("PASS: 5 / 5"), "stdout:\n{stdout}");
+    // Sanity check on output: should mention PASS and all 6 vectors.
+    assert!(stdout.contains("PASS: 6 / 6"), "stdout:\n{stdout}");
 }
 
 #[test]
